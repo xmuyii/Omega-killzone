@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { HeroId, GameMode, TeamId, WeaponId, EffectId } from '../types/game';
 import { HERO_DEFINITIONS } from '../game/constants';
 import { CUSTOM_WEAPONS, SPECIAL_EFFECTS } from '../game/loadoutData';
+import { requestLandscapeMode } from '../utils/orientation';
 import {
   Shield,
   Zap,
@@ -23,6 +24,7 @@ import {
   Flame,
   Eye,
   Bomb,
+  Settings,
 } from 'lucide-react';
 
 interface JoinLobbyModalProps {
@@ -34,6 +36,7 @@ interface JoinLobbyModalProps {
   playerCoins: number;
   turretCount: number;
   onOpenShop: () => void;
+  onOpenSettings?: () => void;
   onJoin: (
     name: string,
     roomId: string,
@@ -54,9 +57,10 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
   playerCoins,
   turretCount,
   onOpenShop,
+  onOpenSettings,
   onJoin,
 }) => {
-  const [name, setName] = useState(initialName || `Agent-${Math.floor(Math.random() * 900 + 100)}`);
+  const [name] = useState(initialName || `Agent-${Math.floor(Math.random() * 900 + 100)}`);
   const [roomId, setRoomId] = useState(initialRoomId || '');
   const [gameMode, setGameMode] = useState<GameMode>('ffa');
   const [selectedTeam, setSelectedTeam] = useState<TeamId | 'auto'>('auto');
@@ -84,6 +88,7 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
 
   const handleJoinGame = (isSpectator: boolean = false) => {
     if (!name.trim()) return;
+    requestLandscapeMode().catch(() => {});
     const teamParam = selectedTeam === 'auto' ? undefined : selectedTeam;
     onJoin(
       name.trim(),
@@ -260,25 +265,34 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
 
           {/* Player Configuration (Callsign & Sector) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Operative Callsign */}
+            {/* Operative Callsign (Changed in Settings) */}
             <div>
-              <label className="block text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1.5">
-                Your Operative Callsign
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  maxLength={16}
-                  placeholder="Enter callsign..."
-                  className="w-full bg-[#060609] border border-slate-700 focus:border-amber-400 rounded-lg px-3.5 py-2.5 text-white text-sm font-mono focus:outline-none focus:ring-1 focus:ring-amber-400 shadow-inner"
-                  required
-                />
-                <Terminal className="w-4 h-4 text-slate-500 absolute right-3 top-3" />
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">
+                  Operative Callsign
+                </label>
+                {onOpenSettings && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Settings className="w-3 h-3" />
+                    <span>CHANGE IN SETTINGS</span>
+                  </button>
+                )}
+              </div>
+              <div className="w-full bg-[#060609] border border-slate-700/90 rounded-lg px-3.5 py-2.5 flex items-center justify-between shadow-inner">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-white font-mono text-sm font-bold tracking-wide">{name}</span>
+                </div>
+                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                  SETTINGS SYNCED
+                </span>
               </div>
               <span className="text-[9px] text-slate-500 font-mono mt-1 block">
-                Unique per tab so you can test 2+ players locally.
+                Operative identity is saved & managed under Terminal Settings.
               </span>
             </div>
 
@@ -540,17 +554,17 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-3 p-2.5 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300">
-                  <div className="p-2 rounded bg-slate-800 text-sky-400 shrink-0">
+                <div className="flex items-center gap-3 p-2.5 rounded-lg bg-slate-900/80 border border-emerald-500/30 text-slate-300">
+                  <div className="p-2 rounded bg-emerald-950/60 text-emerald-400 shrink-0">
                     <UserCheck className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="text-xs font-bold flex items-center gap-2 text-white">
-                      <span>LIVE PVP MATCH • NO BOTS</span>
-                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[9px] font-mono text-slate-400">PURE PVP</span>
+                      <span>AUTO-MATCHMAKING • COMBATANTS READY</span>
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-[9px] font-mono text-emerald-400 font-bold">READY TO PLAY</span>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      Bots cannot be activated during live games. Select Training Mode above to practice with bots.
+                    <div className="text-[11px] text-emerald-400/90 mt-0.5">
+                      Combatants will populate the match so you can play immediately. As soon as live players connect, the arena transitions to pure live PvP!
                     </div>
                   </div>
                 </div>

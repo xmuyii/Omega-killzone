@@ -22,7 +22,10 @@ import {
   Sparkles,
   AlertTriangle,
   Eye,
+  LogOut,
+  Maximize2,
 } from 'lucide-react';
+import { requestLandscapeMode } from '../utils/orientation';
 
 interface TacticalHUDProps {
   player: PlayerState | undefined;
@@ -353,6 +356,15 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
             </div>
           </div>
 
+          {/* Fullscreen / Landscape Lock Button */}
+          <button
+            onClick={() => requestLandscapeMode()}
+            className="bg-slate-900/80 hover:bg-slate-800 border border-slate-700 p-2 rounded backdrop-blur-md text-slate-400 hover:text-amber-400 transition-colors shadow-lg cursor-pointer"
+            title="Lock / Switch to Landscape Mode"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+
           {/* Audio Mute Button */}
           <button
             onClick={onToggleMute}
@@ -361,6 +373,18 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
           >
             {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
           </button>
+
+          {/* Exit Match / Return to Command Terminal Button */}
+          {onReturnToMenu && (
+            <button
+              onClick={onReturnToMenu}
+              className="bg-slate-900/80 hover:bg-rose-950/70 border border-slate-700 hover:border-rose-500/60 px-2.5 py-2 rounded text-slate-400 hover:text-rose-300 font-mono text-xs flex items-center gap-1.5 transition-colors shadow-lg cursor-pointer"
+              title="Exit Match & Return to Command Menu"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">EXIT</span>
+            </button>
+          )}
         </div>
       </header>
 

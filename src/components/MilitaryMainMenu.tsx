@@ -21,8 +21,14 @@ import {
   ShoppingBag,
   Target,
   RefreshCw,
+  Maximize2,
+  Key,
+  Copy,
+  FileText,
+  CheckCircle2,
 } from 'lucide-react';
 import { sounds } from '../game/audio';
+import { requestLandscapeMode } from '../utils/orientation';
 
 interface MilitaryMainMenuProps {
   playerName: string;
@@ -30,9 +36,10 @@ interface MilitaryMainMenuProps {
   selectedHeroId: HeroId;
   onSelectHero: (heroId: HeroId) => void;
   onJoinRoom: (roomId: string, mode: GameMode, asSpectator?: boolean) => void;
-  onOpenLeaderboard: (tab?: LeaderboardTab) => void;
+  onOpenLeaderboard?: (tab?: LeaderboardTab) => void;
   onOpenShop: () => void;
   onOpenLastWeekWinners: () => void;
+  onOpenCustomLobby?: () => void;
   leaderboardData: LeaderboardData;
   playerCoins: number;
 }
@@ -46,6 +53,7 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
   onOpenLeaderboard,
   onOpenShop,
   onOpenLastWeekWinners,
+  onOpenCustomLobby,
   leaderboardData,
   playerCoins,
 }) => {
@@ -57,6 +65,39 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
   const [editingName, setEditingName] = useState<string>(playerName);
   const [nameSavedNotice, setNameSavedNotice] = useState<boolean>(false);
   const [soundMuted, setSoundMuted] = useState<boolean>(false);
+  const [dbStatus, setDbStatus] = useState<any>(null);
+  const [sqlSchema, setSqlSchema] = useState<string>('');
+  const [showSqlModal, setShowSqlModal] = useState<boolean>(false);
+  const [copiedSchema, setCopiedSchema] = useState<boolean>(false);
+
+  // Fetch live database connection and key info
+  const fetchDbStatus = async () => {
+    try {
+      const res = await fetch('/api/database/status');
+      if (res.ok) {
+        const data = await res.json();
+        setDbStatus(data);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const fetchSqlSchema = async () => {
+    try {
+      const res = await fetch('/api/database/schema');
+      if (res.ok) {
+        const text = await res.text();
+        setSqlSchema(text);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  useEffect(() => {
+    fetchDbStatus();
+  }, []);
 
   // Fetch available rooms from /api/rooms
   const fetchRooms = async () => {
@@ -85,8 +126,19 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
     const trimmed = editingName.trim().slice(0, 16);
     if (trimmed) {
       onUpdatePlayerName(trimmed);
+      try {
+        localStorage.setItem('be_player_name', trimmed);
+        sessionStorage.setItem('be_player_name', trimmed);
+        fetch('/api/player/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ callsign: trimmed, tokens: playerCoins }),
+        }).catch(() => {});
+      } catch (err) {
+        // ignore storage errors
+      }
       setNameSavedNotice(true);
-      setTimeout(() => setNameSavedNotice(false), 2000);
+      setTimeout(() => setNameSavedNotice(false), 2500);
     }
   };
 
@@ -186,6 +238,15 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
 
         {/* Right: Player Callsign & Settings */}
         <div className="flex items-center gap-3">
+          {/* Fullscreen / Landscape Lock Button */}
+          <button
+            onClick={() => requestLandscapeMode()}
+            className="p-2 rounded border bg-slate-900 border-slate-700 text-slate-400 hover:text-amber-400 hover:border-amber-500/50 transition-all cursor-pointer shadow-lg"
+            title="Lock / Switch to Landscape Mode"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+
           <button
             onClick={onOpenLastWeekWinners}
             className="px-2.5 py-1.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer"
@@ -257,6 +318,17 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                   <Trophy className="w-4 h-4 text-amber-400" />
                   <span>VIEW LEADERBOARDS</span>
                 </button>
+
+                {onOpenCustomLobby && (
+                  <button
+                    onClick={onOpenCustomLobby}
+                    className="px-4 py-4 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-sky-400 border border-sky-500/40 hover:border-sky-400 font-bold uppercase text-xs font-mono transition-all flex items-center gap-2 cursor-pointer shadow-lg"
+                    title="Open tactical deployment briefing modal"
+                  >
+                    <Crosshair className="w-4 h-4 text-sky-400" />
+                    <span>CUSTOM DEPLOY</span>
+                  </button>
+                )}
               </div>
 
               {/* Quick Server Live Snapshot */}
@@ -935,9 +1007,134 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                 {soundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
               </button>
             </div>
+
+            {/* Persistent Database & Supabase Integration Status */}
+            <div className="border-t border-slate-800 pt-4 mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-xs font-bold text-slate-300 font-mono uppercase flex items-center gap-2">
+                    <Server className="w-3.5 h-3.5 text-amber-400" />
+                    <span>PERSISTENT DATABASE // SUPABASE SYNC</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 font-mono">
+                    Stores all player tokens, values & tournament leaderboards
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  PERSISTENCE ACTIVE
+                </span>
+              </div>
+
+              <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-4 text-xs font-mono space-y-3 mt-2">
+                <div className="flex flex-wrap justify-between items-center text-[11px] pb-2 border-b border-slate-800">
+                  <span className="text-slate-400">Database Engine:</span>
+                  <span className="text-amber-400 font-bold">
+                    {dbStatus?.provider === 'supabase' ? 'Supabase PostgreSQL (Cloud)' : 'Local Persistent Storage (Active & Ready)'}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap justify-between items-center text-[11px] pb-2 border-b border-slate-800">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <Key className="w-3 h-3 text-sky-400" />
+                    <span>Active Key Authorization:</span>
+                  </span>
+                  <span className="text-sky-400 font-semibold">
+                    {dbStatus?.keyTypeDescription || 'Local File Storage'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                  <div className="bg-slate-950/80 border border-amber-500/30 rounded p-2.5">
+                    <div className="flex items-center gap-1.5 text-amber-400 font-bold text-[11px] mb-1">
+                      <Key className="w-3.5 h-3.5" />
+                      <span>SERVICE ROLE KEY (RECOMMENDED)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      For server hosting on <strong className="text-slate-200">Railway</strong> or Docker: set <code className="text-amber-300">SUPABASE_SERVICE_ROLE_KEY</code>. It gives the Node.js game server admin authority to update player tokens and weekly leaderboards directly without requiring user logins or RLS restrictions.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-slate-700/60 rounded p-2.5">
+                    <div className="flex items-center gap-1.5 text-sky-400 font-bold text-[11px] mb-1">
+                      <Key className="w-3.5 h-3.5" />
+                      <span>ANON KEY (PUBLIC CLIENT)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      Set <code className="text-sky-300">SUPABASE_ANON_KEY</code> if using public API keys. When using anon keys, ensure you run the SQL migration schema so public read/write RLS policies are enabled for matches and profiles.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-500">Need table definitions in Supabase?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      fetchSqlSchema();
+                      setShowSqlModal(true);
+                    }}
+                    className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/40 text-[11px] font-mono flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>VIEW SUPABASE SQL SCHEMA</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </main>
+
+      {/* SQL Migration Modal */}
+      {showSqlModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-amber-500/50 rounded-xl max-w-2xl w-full p-5 shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-amber-400" />
+                <h3 className="font-mono font-bold text-white text-sm uppercase">
+                  SUPABASE POSTGRESQL TABLE SCHEMA
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowSqlModal(false)}
+                className="text-slate-400 hover:text-white font-mono text-sm px-2 py-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 font-mono my-3">
+              Copy and execute this script inside your <strong>Supabase Dashboard &gt; SQL Editor</strong> to create all tables and RLS policies for player persistence:
+            </p>
+
+            <div className="relative flex-1 min-h-0 bg-slate-950 border border-slate-800 rounded p-3 overflow-auto">
+              <pre className="text-[11px] font-mono text-emerald-400 whitespace-pre-wrap">
+                {sqlSchema || 'Loading SQL schema...'}
+              </pre>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800 mt-3">
+              <span className="text-[10px] text-slate-500 font-mono">
+                Tables: player_profiles, tournament_leaderboards
+              </span>
+              <button
+                onClick={() => {
+                  if (sqlSchema) {
+                    navigator.clipboard.writeText(sqlSchema);
+                    setCopiedSchema(true);
+                    setTimeout(() => setCopiedSchema(false), 2000);
+                  }
+                }}
+                className="px-4 py-2 rounded bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-xs flex items-center gap-2 cursor-pointer shadow-lg"
+              >
+                {copiedSchema ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedSchema ? 'COPIED TO CLIPBOARD' : 'COPY SQL SCRIPT'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Military Footer Telemetry */}
       <footer className="relative z-20 px-4 sm:px-8 py-3 border-t border-slate-900 bg-slate-950/80 flex flex-wrap items-center justify-between text-[10px] font-mono text-slate-500">

@@ -33,14 +33,79 @@ import { generateMap } from './src/game/mapData';
 import { CUSTOM_WEAPONS, SPECIAL_EFFECTS, TURRET_CONFIG } from './src/game/loadoutData';
 import { resolveWallCollision, hasLineOfSight, angleDiff } from './src/game/raycast';
 import { INITIAL_LEADERBOARD_DATA } from './src/game/leaderboardData';
+import {
+  getDatabaseStatus,
+  getPlayerProfile,
+  savePlayerProfile,
+  updatePlayerTokens,
+  getLeaderboard,
+  recordMatchScore,
+  SUPABASE_SQL_SCHEMA,
+} from './server/db';
 
 const app = express();
+app.use(express.json());
 const server = http.createServer(app);
 const PORT = 3000;
 
 // API routes
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: Date.now() });
+});
+
+// Database & Persistent Storage API
+app.get('/api/database/status', (req, res) => {
+  res.json(getDatabaseStatus());
+});
+
+app.get('/api/database/schema', (req, res) => {
+  res.type('text/plain').send(SUPABASE_SQL_SCHEMA);
+});
+
+app.get('/api/player/:callsign', async (req, res) => {
+  try {
+    const profile = await getPlayerProfile(req.params.callsign);
+    res.json({ success: true, profile });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/player/sync', async (req, res) => {
+  try {
+    const profile = await savePlayerProfile(req.body);
+    res.json({ success: true, profile });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/player/tokens', async (req, res) => {
+  try {
+    const { callsign, deltaTokens } = req.body;
+    const tokens = await updatePlayerTokens(callsign, deltaTokens || 0);
+    res.json({ success: true, tokens });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    const leaderboard = await getLeaderboard();
+    res.json({ leaderboard });
+  } catch (err: any) {
+    res.json({ leaderboard: INITIAL_LEADERBOARD_DATA });
+  }
+});
+
+app.post('/api/leaderboard/submit', async (req, res) => {
+  try {
+    const leaderboard = await recordMatchScore(req.body);
+    res.json({ success: true, leaderboard });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -77,10 +142,6 @@ app.get('/api/rooms', (req, res) => {
     });
   }
   res.json({ rooms: list });
-});
-
-app.get('/api/leaderboard', (req, res) => {
-  res.json({ leaderboard: INITIAL_LEADERBOARD_DATA });
 });
 
 // Room Implementation
@@ -237,10 +298,11 @@ class GameRoom {
     };
 
     this.players[id] = player;
-    this.adjustBots();
+    this.adjustBots({ id, name, team: player.team });
 
-    // Only position bots near player if bots are explicitly enabled!
-    if (this.enableBots) {
+    // When the very first human player enters an empty arena, position a few bots nearby for immediate action
+    const humanCount = this.getHumanPlayerCount();
+    if (humanCount === 1) {
       const nearbyBots = Array.from(this.botIds).map(bId => this.players[bId]).filter(Boolean);
       if (nearbyBots.length > 0) {
         const offsets = [
@@ -322,40 +384,148 @@ class GameRoom {
     this.adjustBots();
   }
 
-  public adjustBots() {
-    // If bots are not explicitly enabled, clear all bots immediately!
-    if (!this.enableBots) {
-      for (const bId of this.botIds) {
-        delete this.players[bId];
-        delete this.nextShootTimes[bId];
+  public adjustBots(newPlayerJoining?: { id: string; name: string; team?: TeamId }) {
+    const humanCount = Object.values(this.players).filter((p) => !p.isBot).length;
+
+    // Condition 1: If there are NO humans in the room (and not in training mode), don't simulate idle bots
+    if (humanCount === 0 && this.gameMode !== 'training') {
+      if (this.botIds.size > 0) {
+        for (const bId of this.botIds) {
+          delete this.players[bId];
+          delete this.nextShootTimes[bId];
+        }
+        this.botIds.clear();
       }
-      this.botIds.clear();
       return;
     }
 
-    const humanCount = Object.values(this.players).filter((p) => !p.isBot).length;
-    const targetBots = Math.max(0, Math.min(MAP_CONFIG.maxBots, 6 - humanCount));
+    // Condition 2: Dynamic slot replacement:
+    // Total combatants in match = targetMatchCapacity (6 combatants)
+    // "If one user joins the match, only one bot is kicked out, the match continues"
+    const maxCapacity = Math.min(this.maxCapacity, 6);
+    const targetBots = this.gameMode === 'training'
+      ? (this.enableBots ? Math.min(MAP_CONFIG.maxBots, 5) : 0)
+      : Math.max(0, maxCapacity - humanCount);
 
-    // Remove excess bots
+    // If humanCount increased and we have more bots than targetBots,
+    // remove ONLY the excess bots (i.e. exactly 1 bot kicked out per user joining)
     while (this.botIds.size > targetBots) {
-      const bId = this.botIds.values().next().value;
-      if (bId) {
-        this.botIds.delete(bId);
-        delete this.players[bId];
-        delete this.nextShootTimes[bId];
+      let chosenBotId: string | null = null;
+
+      // In TDM mode: if a user joined a team, prioritize kicking a bot from that same team to keep teams balanced
+      if (this.gameMode === 'tdm' && newPlayerJoining?.team) {
+        // Check for dead bot on that team first
+        for (const bId of this.botIds) {
+          const b = this.players[bId];
+          if (b && b.team === newPlayerJoining.team && !b.isAlive) {
+            chosenBotId = bId;
+            break;
+          }
+        }
+        // Then any bot on that team
+        if (!chosenBotId) {
+          for (const bId of this.botIds) {
+            const b = this.players[bId];
+            if (b && b.team === newPlayerJoining.team) {
+              chosenBotId = bId;
+              break;
+            }
+          }
+        }
+      }
+
+      // If still not chosen, prefer a bot that is currently dead or respawning so active gunfights aren't interrupted
+      if (!chosenBotId) {
+        for (const bId of this.botIds) {
+          if (!this.players[bId]?.isAlive) {
+            chosenBotId = bId;
+            break;
+          }
+        }
+      }
+
+      // If all bots are alive, choose the bot furthest from any active human player
+      if (!chosenBotId) {
+        let maxDist = -1;
+        const liveHumans = Object.values(this.players).filter((p) => !p.isBot && p.isAlive);
+        for (const bId of this.botIds) {
+          const bot = this.players[bId];
+          if (!bot) continue;
+          if (liveHumans.length === 0) {
+            chosenBotId = bId;
+            break;
+          }
+          const minDistToHuman = Math.min(
+            ...liveHumans.map((h) => Math.hypot(h.x - bot.x, h.y - bot.y))
+          );
+          if (minDistToHuman > maxDist) {
+            maxDist = minDistToHuman;
+            chosenBotId = bId;
+          }
+        }
+      }
+
+      // Final fallback
+      if (!chosenBotId) {
+        chosenBotId = this.botIds.values().next().value;
+      }
+
+      if (chosenBotId) {
+        const kickedBot = this.players[chosenBotId];
+        const botName = kickedBot?.name || 'Bot';
+        this.botIds.delete(chosenBotId);
+        delete this.players[chosenBotId];
+        delete this.nextShootTimes[chosenBotId];
+
+        console.log(
+          `[GameRoom ${this.id}] Real player "${newPlayerJoining?.name || 'User'}" joined. Exactly 1 bot (${botName}) kicked out. ${this.botIds.size} bots remaining. Match continues seamlessly.`
+        );
+
+        // Feed event notification: Player joined, bot stood down, match continues
+        if (newPlayerJoining) {
+          this.recentKills.unshift({
+            killerId: newPlayerJoining.id,
+            killerName: newPlayerJoining.name,
+            killerHero: this.players[newPlayerJoining.id]?.heroId || 'assault',
+            killerTeam: newPlayerJoining.team,
+            killerWeapon: 'DEPLOYED // REPLACED',
+            victimId: chosenBotId,
+            victimName: botName,
+            victimHero: kickedBot?.heroId || 'assault',
+            victimTeam: kickedBot?.team,
+            timestamp: Date.now(),
+          });
+          if (this.recentKills.length > 8) this.recentKills.pop();
+        }
       }
     }
 
-    // Add missing bots from the 4 tactical character archetypes
-    const botNames = ['Apex', 'Viper', 'Ghost', 'Kodiak', 'Nyx', 'Talon', 'Spectre', 'Breacher'];
+    // Pool of realistic, authentic gamer names
+    const realisticGamerNames = [
+      'Viper_99', 'GhostSniper', 'Kodiak_Ops', 'Shadow_X', 'ZeroTrace',
+      'DeadShot_Pro', 'Havoc_Elite', 'CyberWolf', 'Talon_Actual', 'GrimReaper_7',
+      'SilentEcho', 'PulseFire', 'Frostbite', 'NovaStrike', 'IronClad_9',
+      'VoidRunner', 'ApexHunter', 'TitanSlayer', 'Phantom_Recon', 'RogueLeader',
+      'BulletProof', 'NightShade', 'BlitzKrieg', 'CrossHair', 'StormSurge',
+      'Alpha_One', 'Echo_Four', 'DeltaSniper', 'BravoSix', 'OmegaPrime',
+      'Spectre_Ops', 'NeonViper', 'Hawkeye_99', 'RazorEdge', 'DarkMatter'
+    ];
     const heroKeys: HeroId[] = ['sniper', 'shotgun', 'assault', 'marksman'];
 
-    let nameIdx = 0;
+    // Track existing names to ensure unique realistic names
+    const usedNames = new Set(Object.values(this.players).map((p) => p.name.toLowerCase()));
+
     while (this.botIds.size < targetBots) {
       const bId = `bot-${Math.random().toString(36).substr(2, 6)}`;
       const hId = heroKeys[this.botIds.size % heroKeys.length];
       const hero = HERO_DEFINITIONS[hId];
       const spawn = this.getRandomSpawn();
+
+      const availableNames = realisticGamerNames.filter((n) => !usedNames.has(n.toLowerCase()));
+      const botName = availableNames.length > 0
+        ? availableNames[Math.floor(Math.random() * availableNames.length)]
+        : `Operative_${Math.floor(Math.random() * 900 + 100)}`;
+      usedNames.add(botName.toLowerCase());
 
       let botTeam: TeamId | undefined = undefined;
       if (this.gameMode === 'tdm') {
@@ -366,7 +536,7 @@ class GameRoom {
 
       const botPlayer: PlayerState = {
         id: bId,
-        name: botNames[nameIdx % botNames.length],
+        name: botName,
         heroId: hId,
         team: botTeam,
         x: spawn.x,
@@ -400,7 +570,6 @@ class GameRoom {
 
       this.botIds.add(bId);
       this.players[bId] = botPlayer;
-      nameIdx++;
     }
   }
 
@@ -1796,6 +1965,19 @@ class GameRoom {
           },
         })
       );
+
+      // Persist player tokens and tournament score to durable storage & Supabase
+      if (!p.isBot) {
+        updatePlayerTokens(p.name, totalCoins).catch(() => {});
+        recordMatchScore({
+          name: p.name,
+          score: p.score,
+          kills: p.kills,
+          deaths: p.deaths,
+          wins: isWinner ? 1 : 0,
+          heroId: p.heroId,
+        }).catch(() => {});
+      }
     }
 
     if (this.votingTimeout) clearTimeout(this.votingTimeout);

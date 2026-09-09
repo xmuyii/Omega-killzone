@@ -28,6 +28,12 @@ import { KillstreakAnnouncer } from './components/KillstreakAnnouncer';
 import { ShopModal } from './components/ShopModal';
 import { MatchEndVoteModal } from './components/MatchEndVoteModal';
 import { ScoreboardModal } from './components/ScoreboardModal';
+import { MilitaryMainMenu } from './components/MilitaryMainMenu';
+import { LastWeekWinnersModal } from './components/LastWeekWinnersModal';
+import { OrientationGuard } from './components/OrientationGuard';
+import { requestLandscapeMode } from './utils/orientation';
+import { INITIAL_LEADERBOARD_DATA } from './game/leaderboardData';
+import { LeaderboardData } from './types/game';
 import {
   getPlayerCoins,
   getEquippedLoadout,
@@ -87,6 +93,35 @@ export default function App() {
   );
   const [lastWinner, setLastWinner] = useState<string | null>(null);
   const [coinsEarned, setCoinsEarned] = useState<number>(0);
+  const [showDeployModal, setShowDeployModal] = useState<boolean>(false);
+  const [showLastWeekWinners, setShowLastWeekWinners] = useState<boolean>(() => {
+    return !sessionStorage.getItem('be_seen_last_week_v2');
+  });
+  const [leaderboardData, setLeaderboardData] = useState<LeaderboardData>(INITIAL_LEADERBOARD_DATA);
+
+  // Sync leaderboards & persistent player tokens from database
+  useEffect(() => {
+    fetch('/api/leaderboard')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.leaderboard) {
+          setLeaderboardData(data.leaderboard);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!playerName) return;
+    fetch(`/api/player/${encodeURIComponent(playerName)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.profile?.tokens !== undefined) {
+          setPlayerCoins(data.profile.tokens);
+        }
+      })
+      .catch(() => {});
+  }, [playerName]);
 
   // Scoreboard and Spectator state
   const [isScoreboardOpen, setIsScoreboardOpen] = useState<boolean>(false);
@@ -315,6 +350,7 @@ export default function App() {
     bots?: boolean,
     spectate?: boolean
   ) => {
+    requestLandscapeMode().catch(() => {});
     setPlayerName(name);
     setRoomId(room);
     setCurrentHeroId(hero);
@@ -667,6 +703,7 @@ export default function App() {
           onDeployTurret={handleDeployTurret}
           onOpenShop={() => setIsShopOpen(true)}
           onToggleBots={handleToggleBots}
+          onReturnToMenu={handleReturnToMenu}
         />
       )}
 
@@ -778,20 +815,80 @@ export default function App() {
         />
       )}
 
-      {/* Initial Join / Lobby Modal */}
-      {!hasJoined && (
-        <JoinLobbyModal
-          initialName={playerName}
-          initialRoomId={roomId}
-          initialHeroId={currentHeroId}
-          equippedWeaponId={equippedLoadout.weaponId}
-          equippedEffectId={equippedLoadout.effectId}
-          playerCoins={playerCoins}
-          turretCount={turretInventory}
-          onOpenShop={() => setIsShopOpen(true)}
-          onJoin={handleJoinLobby}
+      {/* Home Screen / Military Main Menu (Shown before joining) */}
+      {!hasJoined && !showDeployModal && (
+        <div className="relative z-40 w-full h-full">
+          <MilitaryMainMenu
+            playerName={playerName}
+            playerCoins={playerCoins}
+            selectedHeroId={currentHeroId}
+            onSelectHero={(heroId) => {
+              setCurrentHeroId(heroId);
+              localStorage.setItem('be_hero_id', heroId);
+            }}
+            onUpdatePlayerName={(newName) => {
+              setPlayerName(newName);
+              sessionStorage.setItem('be_player_name', newName);
+            }}
+            onJoinRoom={(targetRoomId, mode, asSpectator) => {
+              handleJoinLobby(
+                playerName,
+                targetRoomId,
+                currentHeroId,
+                mode,
+                undefined,
+                false,
+                asSpectator
+              );
+            }}
+            onOpenCustomLobby={() => setShowDeployModal(true)}
+            onOpenShop={() => setIsShopOpen(true)}
+            onOpenLastWeekWinners={() => setShowLastWeekWinners(true)}
+            leaderboardData={leaderboardData}
+          />
+        </div>
+      )}
+
+      {/* Custom Deploy & Character Briefing Modal */}
+      {!hasJoined && showDeployModal && (
+        <div className="relative z-50">
+          <JoinLobbyModal
+            initialName={playerName}
+            initialRoomId={roomId}
+            initialHeroId={currentHeroId}
+            equippedWeaponId={equippedLoadout.weaponId}
+            equippedEffectId={equippedLoadout.effectId}
+            playerCoins={playerCoins}
+            turretCount={turretInventory}
+            onOpenShop={() => setIsShopOpen(true)}
+            onOpenSettings={() => setShowDeployModal(false)}
+            onJoin={(name, room, hero, mode, team, bots, spectate) => {
+              setShowDeployModal(false);
+              handleJoinLobby(name, room, hero, mode, team, bots, spectate);
+            }}
+          />
+          <button
+            onClick={() => setShowDeployModal(false)}
+            className="fixed top-4 left-4 z-50 px-3.5 py-1.5 rounded-lg bg-slate-900/90 border border-slate-700 text-slate-300 hover:text-white font-mono text-xs uppercase cursor-pointer backdrop-blur-md shadow-xl"
+          >
+            ← BACK TO COMMAND TERMINAL
+          </button>
+        </div>
+      )}
+
+      {/* Last Week Winners Modal (Displayed when player returns to game, closable) */}
+      {showLastWeekWinners && (
+        <LastWeekWinnersModal
+          winners={leaderboardData.lastWeek}
+          onClose={() => {
+            setShowLastWeekWinners(false);
+            sessionStorage.setItem('be_seen_last_week_v2', 'true');
+          }}
         />
       )}
+
+      {/* Mobile Landscape Orientation Guard & Auto-Prompt */}
+      <OrientationGuard />
     </div>
   );
 }

@@ -1,0 +1,22 @@
+{
+  "name": "Omega Killzone Zero",
+  "short_name": "Killzone Zero",
+  "description": "Tactical top-down multiplayer shooter arena with auto-fire cones, sound detection, and real-time multiplayer combat.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#060609",
+  "theme_color": "#060609",
+  "icons": [
+    {
+      "src": "/assets/icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
