@@ -131,13 +131,16 @@ app.get('/api/rooms', (req, res) => {
     list.push({
       id,
       name: sectorName,
+      region: 'US-EAST',
+      mode: r.gameMode,
+      gameMode: r.gameMode,
       playerCount: humanCount,
       botCount: Object.values(r.players).filter((p) => p.isBot).length,
+      maxPlayers: r.maxCapacity,
       maxCapacity: r.maxCapacity,
       isFull,
-      gameMode: r.gameMode,
       mapId: r.mapId,
-      status: isFull ? 'MAX CAPACITY' : humanCount >= 6 ? 'ACTIVE COMBAT' : humanCount > 0 ? 'HIGH THREAT' : 'SQUAD FORMING',
+      status: humanCount > 0 ? 'in_progress' : 'waiting',
       spectatorCount: r.spectators.size,
     });
   }

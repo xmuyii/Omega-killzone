@@ -486,7 +486,7 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
 
       {/* Combat Activity Log (Aside / Left-Bottom) */}
       <aside className="absolute left-4 sm:left-6 bottom-32 sm:bottom-36 w-64 sm:w-72 flex flex-col gap-1.5 pointer-events-none z-30">
-        {kills.slice(0, 3).map((k, i) => (
+        {(Array.isArray(kills) ? kills : []).slice(0, 3).map((k, i) => (
           <div
             key={k.timestamp + i}
             className="bg-black/60 border-l-2 border-amber-500 px-3 py-1.5 text-xs font-mono italic text-amber-200/90 backdrop-blur-sm shadow-md"

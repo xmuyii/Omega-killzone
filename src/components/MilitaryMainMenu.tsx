@@ -106,7 +106,22 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
       const res = await fetch('/api/rooms');
       if (res.ok) {
         const data = await res.json();
-        setRooms(data);
+        const rawRooms = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.rooms)
+          ? data.rooms
+          : [];
+
+        const formattedRooms: ServerRoomInfo[] = rawRooms.map((r: any) => ({
+          id: r.id || 'room',
+          name: r.name || r.id || 'Sector Room',
+          region: r.region || 'US-EAST',
+          mode: (r.mode || r.gameMode || 'ffa') as GameMode,
+          playerCount: typeof r.playerCount === 'number' ? r.playerCount : 0,
+          maxPlayers: typeof r.maxPlayers === 'number' ? r.maxPlayers : (r.maxCapacity || 8),
+          status: (r.status === 'in_progress' || r.status === 'ACTIVE COMBAT' || r.playerCount > 0) ? 'in_progress' : 'waiting',
+        }));
+        setRooms(formattedRooms);
       }
     } catch (e) {
       console.warn('Failed to fetch rooms:', e);
@@ -338,10 +353,10 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                     <Server className="w-3.5 h-3.5 text-amber-400" />
                     LIVE SERVERS ONLINE
                   </span>
-                  <span className="text-emerald-400">{rooms.length} ACTIVE BATTLEFIELDS</span>
+                  <span className="text-emerald-400">{(Array.isArray(rooms) ? rooms : []).length} ACTIVE BATTLEFIELDS</span>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {rooms.slice(0, 4).map((r) => (
+                  {(Array.isArray(rooms) ? rooms : []).slice(0, 4).map((r) => (
                     <div
                       key={r.id}
                       onClick={() => onJoinRoom(r.id, r.mode)}
@@ -577,9 +592,16 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {rooms.map((room) => {
-                    const isFull = room.playerCount >= room.maxPlayers;
-                    return (
+                  {(Array.isArray(rooms) ? rooms : []).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-500 font-mono text-xs">
+                        {isLoadingRooms ? 'SCANNING SECURE SATELLITE LINKS FOR BATTLEFIELDS...' : 'NO SERVERS DETECTED. INITIALIZING LOCAL SIMULATION...'}
+                      </td>
+                    </tr>
+                  ) : (
+                    (Array.isArray(rooms) ? rooms : []).map((room) => {
+                      const isFull = room.playerCount >= room.maxPlayers;
+                      return (
                       <tr
                         key={room.id}
                         className="hover:bg-slate-850/40 transition-colors group"
@@ -654,7 +676,7 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                         </td>
                       </tr>
                     );
-                  })}
+                  }))}
                 </tbody>
               </table>
             </div>

@@ -9,7 +9,8 @@ interface LastWeekWinnersModalProps {
 }
 
 export const LastWeekWinnersModal: React.FC<LastWeekWinnersModalProps> = ({ winners, onClose }) => {
-  const top10 = winners.slice(0, 10);
+  const safeWinners = Array.isArray(winners) ? winners : [];
+  const top10 = safeWinners.slice(0, 10);
   const top3 = top10.slice(0, 3);
   const ranks4to10 = top10.slice(3);
 
