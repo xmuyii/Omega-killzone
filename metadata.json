@@ -1,0 +1,6 @@
+{
+  "name": "Omega Killzone Zero",
+  "description": "Top-down tactical multiplayer shooter with auto-fire cones, sound echo detection, hero archetypes, and real-time WebSocket synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
