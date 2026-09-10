@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { LeaderboardData, LeaderboardEntry, HeroId } from '../src/types/game';
+import { LeaderboardData, LeaderboardEntry, HeroId, MmoSectorLiveState, MmoCommanderOccupant, MmoBounty } from '../src/types/game';
 import { INITIAL_LEADERBOARD_DATA } from '../src/game/leaderboardData';
 
 export interface PlayerProfile {
@@ -15,6 +15,20 @@ export interface PlayerProfile {
   unlockedItems: string[];
   equippedHero: HeroId;
   updatedAt: number;
+  // Synced from persistent MMO 'players' table:
+  mmoUserId?: string;
+  mmoBaseName?: string;
+  mmoBaseHqLevel?: number;
+  mmoTotalPower?: number;
+  mmoPowerTier?: string;
+  mmoWarPoints?: number;
+  mmoSector?: number;
+  mmoHomeSector?: number;
+  mmoAllianceId?: string;
+  mmoGold?: number;
+  mmoCredits?: number;
+  mmoEnergy?: number;
+  mmoIsBountyHunter?: boolean;
 }
 
 // Database directory & persistent backup files for local/standalone hosting (e.g. Railway without Supabase)
@@ -154,6 +168,8 @@ export async function getPlayerProfile(callsign: string): Promise<PlayerProfile>
   const key = (callsign || 'Agent').trim().toLowerCase();
   const sb = initSupabase();
 
+  let profile: PlayerProfile | undefined;
+
   if (sb) {
     try {
       const { data, error } = await sb
@@ -163,7 +179,7 @@ export async function getPlayerProfile(callsign: string): Promise<PlayerProfile>
         .maybeSingle();
 
       if (!error && data) {
-        const prof: PlayerProfile = {
+        profile = {
           callsign: data.callsign,
           tokens: data.tokens ?? 500,
           kills: data.kills ?? 0,
@@ -175,17 +191,61 @@ export async function getPlayerProfile(callsign: string): Promise<PlayerProfile>
           equippedHero: (data.equipped_hero as HeroId) || 'assault',
           updatedAt: data.updated_at ? new Date(data.updated_at).getTime() : Date.now(),
         };
-        playerProfilesCache.set(key, prof);
-        persistProfilesToDisk();
-        return prof;
       }
     } catch (err) {
       console.warn('[Database] Supabase query error, falling back to local storage:', err);
     }
+
+    // Check user's persistent MMO 'players' table to link cross-game MMO base data
+    try {
+      const { data: mmoPlayer } = await sb
+        .from('players')
+        .select('*')
+        .ilike('username', key)
+        .maybeSingle();
+
+      if (mmoPlayer) {
+        if (!profile) {
+          profile = {
+            callsign: mmoPlayer.username || callsign.trim() || 'Agent',
+            tokens: (mmoPlayer.credits || 500),
+            kills: 0,
+            deaths: 0,
+            wins: mmoPlayer.wins || 0,
+            matches: (mmoPlayer.wins || 0) + (mmoPlayer.losses || 0),
+            highScore: mmoPlayer.war_points || 0,
+            unlockedItems: ['frag_grenade'],
+            equippedHero: 'assault',
+            updatedAt: Date.now(),
+          };
+        }
+        profile.mmoUserId = mmoPlayer.user_id;
+        profile.mmoBaseName = mmoPlayer.base_name;
+        profile.mmoBaseHqLevel = mmoPlayer.base_hq_level;
+        profile.mmoTotalPower = mmoPlayer.total_power ? Number(mmoPlayer.total_power) : undefined;
+        profile.mmoPowerTier = mmoPlayer.power_tier;
+        profile.mmoWarPoints = mmoPlayer.war_points;
+        profile.mmoSector = mmoPlayer.sector;
+        profile.mmoHomeSector = mmoPlayer.home_sector;
+        profile.mmoAllianceId = mmoPlayer.alliance_id;
+        profile.mmoGold = mmoPlayer.gold;
+        profile.mmoCredits = mmoPlayer.credits;
+        profile.mmoEnergy = mmoPlayer.energy;
+        profile.mmoIsBountyHunter = mmoPlayer.is_bounty_hunter;
+      }
+    } catch (err) {
+      // Table may not be queried or player not found
+    }
+  }
+
+  if (profile) {
+    playerProfilesCache.set(key, profile);
+    persistProfilesToDisk();
+    return profile;
   }
 
   // Fallback to cache/local persistent storage
-  let profile = playerProfilesCache.get(key);
+  profile = playerProfilesCache.get(key);
   if (!profile) {
     profile = {
       callsign: callsign.trim() || 'Agent',
@@ -313,6 +373,94 @@ export async function getLeaderboard(): Promise<LeaderboardData> {
         if (categorized.allTime.length > 0) leaderboardCache.allTime = categorized.allTime;
         if (categorized.lastWeek.length > 0) leaderboardCache.lastWeek = categorized.lastWeek;
         if (categorized.daily.length > 0) leaderboardCache.daily = categorized.daily;
+      }
+
+      // Query user's persistent MMO 'last_week_winners' table
+      try {
+        const { data: lwData } = await sb
+          .from('last_week_winners')
+          .select('*')
+          .order('rank', { ascending: true })
+          .limit(10);
+
+        if (Array.isArray(lwData) && lwData.length > 0) {
+          const heroRotation: HeroId[] = ['sniper', 'assault', 'shotgun', 'marksman'];
+          leaderboardCache.lastWeek = lwData.map((row, idx) => ({
+            id: `lww-${row.id || row.user_id || idx}`,
+            name: (row.username || 'Commander').toUpperCase(),
+            heroId: heroRotation[idx % heroRotation.length],
+            kills: Math.round((row.points || row.weekly_points || 1200) / 60),
+            deaths: Math.max(1, Math.round((row.points || row.weekly_points || 1200) / 320)),
+            wins: Math.max(1, Math.round((row.points || row.weekly_points || 1200) / 180)),
+            score: row.points || row.weekly_points || 0,
+            rank: row.rank || (idx + 1),
+            kd: ((row.points || 1000) / 450).toFixed(2),
+            badge: row.rank === 1 ? 'TOURNAMENT CHAMPION' : row.rank <= 3 ? 'APEX PODIUM' : 'TOP 10 ACE',
+            title: `Level ${row.level || 1} Sector Ace`,
+            level: row.level,
+            weekKey: row.week_key,
+          }));
+        }
+      } catch (err) {
+        // Table not ready or empty
+      }
+
+      // Query user's persistent MMO 'weekly_leaderboard' table
+      try {
+        const { data: wlData } = await sb
+          .from('weekly_leaderboard')
+          .select('*')
+          .order('weekly_points', { ascending: false })
+          .limit(20);
+
+        if (Array.isArray(wlData) && wlData.length > 0) {
+          const heroRotation: HeroId[] = ['assault', 'sniper', 'shotgun', 'marksman'];
+          leaderboardCache.thisWeek = wlData.map((row, idx) => ({
+            id: `wl-${row.user_id || idx}`,
+            name: (row.username || 'Operative').toUpperCase(),
+            heroId: heroRotation[idx % heroRotation.length],
+            kills: Math.round((row.weekly_points || 800) / 50),
+            deaths: Math.max(1, Math.round((row.weekly_points || 800) / 260)),
+            wins: Math.max(1, Math.round((row.weekly_points || 800) / 150)),
+            score: row.weekly_points || 0,
+            rank: idx + 1,
+            kd: ((row.weekly_points || 500) / 300).toFixed(2),
+            badge: idx === 0 ? 'CURRENT #1' : idx < 3 ? 'TOP 3' : undefined,
+            title: `Level ${row.level || 1} Combatant`,
+            level: row.level,
+          }));
+        }
+      } catch (err) {
+        // Table not ready or empty
+      }
+
+      // Query user's persistent MMO 'alltime_leaderboard' table
+      try {
+        const { data: atData } = await sb
+          .from('alltime_leaderboard')
+          .select('*')
+          .order('all_time_points', { ascending: false })
+          .limit(20);
+
+        if (Array.isArray(atData) && atData.length > 0) {
+          const heroRotation: HeroId[] = ['assault', 'sniper', 'shotgun', 'marksman'];
+          leaderboardCache.allTime = atData.map((row, idx) => ({
+            id: `at-${row.user_id || idx}`,
+            name: (row.username || 'Apex Operative').toUpperCase(),
+            heroId: heroRotation[idx % heroRotation.length],
+            kills: Math.round((row.all_time_points || 5000) / 40),
+            deaths: Math.max(1, Math.round((row.all_time_points || 5000) / 300)),
+            wins: Math.max(1, Math.round((row.all_time_points || 5000) / 120)),
+            score: row.all_time_points || 0,
+            rank: idx + 1,
+            kd: ((row.all_time_points || 2000) / 400).toFixed(2),
+            badge: idx === 0 ? 'HALL OF FAME #1' : idx < 3 ? 'LEGENDARY' : undefined,
+            title: `Level ${row.level || 1} Grand Commander`,
+            level: row.level,
+          }));
+        }
+      } catch (err) {
+        // Table not ready or empty
       }
     } catch (err) {
       console.warn('[Database] Could not fetch leaderboards from Supabase:', err);
@@ -444,4 +592,381 @@ alter table leaderboard_entries enable row level security;
 
 create policy "Allow all operations for backend service" on player_profiles for all using (true);
 create policy "Allow all operations for backend service" on leaderboard_entries for all using (true);
+
+-- Sectors Table (Supports custom game server sectors from your existing Supabase project)
+create table if not exists sectors (
+  id text primary key,
+  name text not null,
+  region text default 'us-east',
+  mode text default 'ffa',
+  max_players integer default 10,
+  description text,
+  is_active boolean default true,
+  created_at timestamp with time zone default timezone('utc'::text, now())
+);
+alter table sectors enable row level security;
+create policy "Allow all operations for backend service" on sectors for all using (true);
 `;
+
+export interface SectorRecord {
+  id: string;
+  name: string;
+  region?: string;
+  mode?: string;
+  max_players?: number;
+  description?: string;
+  is_active?: boolean;
+}
+
+export async function getSectorsFromDatabase(): Promise<SectorRecord[]> {
+  const sb = initSupabase();
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from('sectors')
+        .select('*')
+        .order('id', { ascending: true });
+      if (!error && Array.isArray(data) && data.length > 0) {
+        console.log(`[Database] Successfully loaded ${data.length} sectors from Supabase.`);
+        return data as SectorRecord[];
+      }
+    } catch (err) {
+      console.warn('[Database] Could not fetch sectors from Supabase:', err);
+    }
+  }
+  return [];
+}
+
+/**
+ * Query live state of a persistent MMO Sector (such as Sector 8) from Supabase:
+ * - Reads public.sector_state (dominance, occupancy, event_log, phase)
+ * - Reads public.players (active commanders in this sector, HQ level, power, shield)
+ * - Reads public.bounty_board (bounties active in this sector)
+ */
+export async function getMmoSectorLiveState(sectorId: number): Promise<MmoSectorLiveState> {
+  const sb = initSupabase();
+  let sectorStateRow: any = null;
+  let occupants: MmoCommanderOccupant[] = [];
+  let bounties: MmoBounty[] = [];
+
+  if (sb) {
+    try {
+      // 1. Query sector_state
+      const { data: sData } = await sb
+        .from('sector_state')
+        .select('*')
+        .eq('sector_id', sectorId)
+        .maybeSingle();
+
+      if (sData) {
+        sectorStateRow = sData;
+      }
+
+      // 2. Query players in this sector
+      const { data: pData } = await sb
+        .from('players')
+        .select('user_id, username, level, total_power, power_tier, base_name, base_hq_level, alliance_id, war_points, base_shielded, is_bounty_hunter')
+        .eq('sector', sectorId)
+        .order('total_power', { ascending: false })
+        .limit(15);
+
+      if (Array.isArray(pData) && pData.length > 0) {
+        occupants = pData.map((p) => ({
+          userId: p.user_id,
+          username: p.username,
+          level: p.level,
+          totalPower: p.total_power ? Number(p.total_power) : undefined,
+          powerTier: p.power_tier,
+          baseName: p.base_name,
+          baseHqLevel: p.base_hq_level,
+          allianceId: p.alliance_id,
+          warPoints: p.war_points,
+          baseShielded: p.base_shielded,
+          isBountyHunter: p.is_bounty_hunter,
+        }));
+      }
+
+      // 3. Query bounty_board for target_home_sector = sectorId or open bounties
+      const { data: bData } = await sb
+        .from('bounty_board')
+        .select('*')
+        .or(`target_home_sector.eq.${sectorId},status.eq.open`)
+        .order('reward_gold', { ascending: false })
+        .limit(8);
+
+      if (Array.isArray(bData) && bData.length > 0) {
+        bounties = bData.map((b) => ({
+          bountyId: b.bounty_id,
+          targetId: b.target_id,
+          targetName: b.target_name,
+          targetHomeSector: b.target_home_sector,
+          postedByName: b.posted_by_name,
+          rewardGold: b.reward_gold || 0,
+          reason: b.reason,
+          status: b.status || 'open',
+        }));
+      }
+    } catch (err) {
+      console.warn('[Database] Could not query MMO tables for sector:', sectorId, err);
+    }
+  }
+
+  // Realistic fallback defaults for Sector 8 if database row is empty or offline
+  if (!sectorStateRow && sectorId === 8) {
+    sectorStateRow = {
+      sector_id: 8,
+      last_phase_name: 'CONTESTED OUTPOST SIEGE (PHASE 3)',
+      dominance: { alliance: 'ALLIANCE-DELTA', percentage: 68 },
+      event_log: [
+        {
+          timestamp: new Date().toISOString(),
+          type: 'killzone_combat',
+          message: 'Sector 8 Outpost Crucible fortified by Vanguard Forces.',
+          commander: 'Vanguard-Actual',
+        },
+      ],
+    };
+  }
+
+  if (occupants.length === 0 && sectorId === 8) {
+    occupants = [
+      {
+        username: 'VANGUARD-PRIME',
+        baseName: 'Crucible Citadel HQ',
+        baseHqLevel: 7,
+        totalPower: 125000,
+        powerTier: 'Fortress Class V',
+        warPoints: 480,
+        allianceId: 'ALLIANCE-DELTA',
+        baseShielded: true,
+      },
+      {
+        username: 'SHADOW-SPECTRE',
+        baseName: 'Silent Outpost 08',
+        baseHqLevel: 5,
+        totalPower: 72000,
+        powerTier: 'Bastion Class III',
+        warPoints: 290,
+        allianceId: 'IRON-LEGION',
+        baseShielded: false,
+      },
+      {
+        username: 'REAP_COMMANDER',
+        baseName: 'Heavy Armory Sector 8',
+        baseHqLevel: 6,
+        totalPower: 98000,
+        powerTier: 'Fortress Class IV',
+        warPoints: 375,
+        allianceId: 'ALLIANCE-DELTA',
+        isBountyHunter: true,
+      },
+    ];
+  }
+
+  if (bounties.length === 0 && sectorId === 8) {
+    bounties = [
+      {
+        bountyId: 'BOUNTY-801',
+        targetName: 'SHADOW-SPECTRE',
+        targetHomeSector: 8,
+        postedByName: 'High Command',
+        rewardGold: 1200,
+        reason: 'Sabotaged Outpost Power Grid in Sector 8',
+        status: 'open',
+      },
+      {
+        bountyId: 'BOUNTY-802',
+        targetName: 'CIPHER-NINE',
+        targetHomeSector: 8,
+        postedByName: 'Frontline Alliance',
+        rewardGold: 850,
+        reason: 'Intercepted Convoy across Crucible Canyon',
+        status: 'open',
+      },
+    ];
+  }
+
+  return {
+    sectorId,
+    dominance: sectorStateRow?.dominance,
+    occupancy: sectorStateRow?.occupancy,
+    lastPhaseName: sectorStateRow?.last_phase_name || `Sector ${sectorId} Garrison Active`,
+    lastUpdated: sectorStateRow?.last_updated || new Date().toISOString(),
+    eventLog: Array.isArray(sectorStateRow?.event_log) ? sectorStateRow.event_log : [],
+    occupants,
+    bounties,
+  };
+}
+
+/**
+ * Synchronizes battle results from Omega Killzone 0 directly into the persistent MMO tables:
+ * - Appends live battle log to public.sector_state.event_log
+ * - Awards War Points, Gold, and Credits to public.players
+ * - Updates public.weekly_leaderboard
+ * - Automatically resolves and claims open bounties in public.bounty_board if a target is slain
+ */
+export async function syncMmoBattleOutcome(params: {
+  roomId: string;
+  sectorNumber?: string | number;
+  playerName: string;
+  score: number;
+  kills: number;
+  deaths: number;
+  isWinner: boolean;
+  coinsAwarded: number;
+  victimNames?: string[];
+}): Promise<void> {
+  const sb = initSupabase();
+  const sectorNum = params.sectorNumber
+    ? Number(params.sectorNumber)
+    : params.roomId.startsWith('sector-')
+    ? Number(params.roomId.split('-')[1])
+    : undefined;
+
+  if (sectorNum && !isNaN(sectorNum)) {
+    console.log(
+      `[MMO Sync] Synchronizing battle outcome for Sector ${sectorNum} - Operative: ${params.playerName} (Winner: ${params.isWinner}, Kills: ${params.kills})`
+    );
+
+    if (sb) {
+      try {
+        // 1. Update sector_state event_log & last_updated
+        const { data: sState } = await sb
+          .from('sector_state')
+          .select('event_log')
+          .eq('sector_id', sectorNum)
+          .maybeSingle();
+
+        const currentLog = Array.isArray(sState?.event_log) ? sState.event_log : [];
+        const battleLogEntry = {
+          timestamp: new Date().toISOString(),
+          type: 'killzone_combat',
+          message: `[OMEGA KILLZONE 0] Sector ${sectorNum} Outpost skirmish: Commander ${params.playerName} ${
+            params.isWinner ? 'secured tactical victory (+35 War Points)' : 'engaged hostile forces'
+          }.`,
+          commander: params.playerName,
+          kills: params.kills,
+          deaths: params.deaths,
+          victory: params.isWinner,
+        };
+        const updatedLog = [battleLogEntry, ...currentLog].slice(0, 30);
+
+        await sb.from('sector_state').upsert(
+          {
+            sector_id: sectorNum,
+            event_log: updatedLog,
+            last_updated: new Date().toISOString(),
+          },
+          { onConflict: 'sector_id' }
+        );
+
+        // 2. Update players table
+        const { data: playerRow } = await sb
+          .from('players')
+          .select('id, user_id, war_points, wins, losses, credits, gold, hunter_kills, is_bounty_hunter')
+          .ilike('username', params.playerName)
+          .maybeSingle();
+
+        if (playerRow) {
+          const warPointsGain = params.isWinner ? 35 : 10;
+          const goldGain = params.isWinner ? 25 : 5;
+          await sb
+            .from('players')
+            .update({
+              war_points: (playerRow.war_points || 0) + warPointsGain,
+              wins: (playerRow.wins || 0) + (params.isWinner ? 1 : 0),
+              losses: (playerRow.losses || 0) + (params.isWinner ? 0 : 1),
+              credits: (playerRow.credits || 0) + params.coinsAwarded,
+              gold: (playerRow.gold || 0) + goldGain,
+              hunter_kills: playerRow.is_bounty_hunter
+                ? (playerRow.hunter_kills || 0) + params.kills
+                : playerRow.hunter_kills,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', playerRow.id);
+
+          console.log(
+            `[MMO Sync] Updated player ${params.playerName} in MMO table: +${warPointsGain} War Points, +${goldGain} Gold, +${params.coinsAwarded} Credits.`
+          );
+        }
+
+        // 3. Update weekly_leaderboard table
+        const { data: wLeader } = await sb
+          .from('weekly_leaderboard')
+          .select('user_id, weekly_points')
+          .ilike('username', params.playerName)
+          .maybeSingle();
+
+        if (wLeader) {
+          await sb
+            .from('weekly_leaderboard')
+            .update({
+              weekly_points: (wLeader.weekly_points || 0) + (params.isWinner ? 35 : 10),
+            })
+            .eq('user_id', wLeader.user_id);
+        }
+
+        // 4. Check bounty_board for claimed bounties if kills occurred
+        if (params.victimNames && params.victimNames.length > 0) {
+          for (const victim of params.victimNames) {
+            const { data: openBounty } = await sb
+              .from('bounty_board')
+              .select('*')
+              .ilike('target_name', victim)
+              .eq('status', 'open')
+              .maybeSingle();
+
+            if (openBounty) {
+              await sb
+                .from('bounty_board')
+                .update({
+                  status: 'claimed',
+                  claimed_by_id: params.playerName,
+                  claimed_at: new Date().toISOString(),
+                })
+                .eq('bounty_id', openBounty.bounty_id);
+
+              console.log(
+                `[MMO Sync] Bounty on ${victim} claimed by ${params.playerName}! Reward: ${openBounty.reward_gold} Gold.`
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[MMO Sync] Error syncing battle outcome with MMO tables:', err);
+      }
+    }
+  }
+}
+
+/**
+ * Fetch active bounties from public.bounty_board
+ */
+export async function getMmoBounties(sectorId?: number): Promise<MmoBounty[]> {
+  const sb = initSupabase();
+  if (sb) {
+    try {
+      let query = sb.from('bounty_board').select('*').eq('status', 'open');
+      if (sectorId !== undefined) {
+        query = query.eq('target_home_sector', sectorId);
+      }
+      const { data, error } = await query.order('reward_gold', { ascending: false }).limit(20);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        return data.map((b) => ({
+          bountyId: b.bounty_id,
+          targetId: b.target_id,
+          targetName: b.target_name,
+          targetHomeSector: b.target_home_sector,
+          postedByName: b.posted_by_name,
+          rewardGold: b.reward_gold || 0,
+          reason: b.reason,
+          status: b.status || 'open',
+        }));
+      }
+    } catch (err) {
+      console.warn('[Database] Could not fetch bounties:', err);
+    }
+  }
+  return [];
+}
+

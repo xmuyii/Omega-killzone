@@ -2,6 +2,7 @@ import React from 'react';
 import { LeaderboardEntry } from '../types/game';
 import { Trophy, Award, Medal, X, ShieldAlert, Target, Crosshair, Check } from 'lucide-react';
 import { HERO_DEFINITIONS } from '../game/constants';
+import { CharacterAvatar } from './CharacterAvatar';
 
 interface LastWeekWinnersModalProps {
   winners: LeaderboardEntry[];
@@ -67,11 +68,8 @@ export const LastWeekWinnersModal: React.FC<LastWeekWinnersModalProps> = ({ winn
                     <Medal className="w-3.5 h-3.5" />
                     <span>{rankMedal.label}</span>
                   </div>
-                  <div
-                    className="w-11 h-11 rounded-full flex items-center justify-center font-black text-black text-base my-1.5 shadow-lg"
-                    style={{ backgroundColor: hero.color }}
-                  >
-                    {winner.name.charAt(0).toUpperCase()}
+                  <div className="my-1.5 shadow-lg">
+                    <CharacterAvatar heroId={winner.heroId} size="md" callsign={winner.name} />
                   </div>
                   <div className="text-xs font-black font-mono text-white truncate max-w-[130px] uppercase">
                     {winner.name}
@@ -116,10 +114,7 @@ export const LastWeekWinnersModal: React.FC<LastWeekWinnersModalProps> = ({ winn
                         <span className="w-5 text-center font-bold text-slate-400 text-[11px]">
                           #{rank}
                         </span>
-                        <span
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: hero.color }}
-                        />
+                        <CharacterAvatar heroId={entry.heroId} size="xs" callsign={entry.name} />
                         <div className="truncate">
                           <span className="font-bold text-white uppercase text-xs">{entry.name}</span>
                           {entry.title && (

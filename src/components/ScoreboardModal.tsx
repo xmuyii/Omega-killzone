@@ -1,6 +1,7 @@
 import React from 'react';
 import { PlayerState, GameMode, TeamId, HeroId } from '../types/game';
 import { HERO_DEFINITIONS } from '../game/constants';
+import { CharacterAvatar } from './CharacterAvatar';
 import {
   Users,
   X,
@@ -86,13 +87,7 @@ export const ScoreboardModal: React.FC<ScoreboardModalProps> = ({
         {/* Operative & Callsign */}
         <td className="py-2.5 px-3">
           <div className="flex items-center gap-2.5">
-            <div
-              className="w-7 h-7 rounded flex items-center justify-center text-xs font-black text-black shrink-0 shadow"
-              style={{ backgroundColor: hero.color }}
-              title={`${hero.name} (${hero.role})`}
-            >
-              {hero.name.charAt(0)}
-            </div>
+            <CharacterAvatar heroId={p.heroId} size="sm" callsign={p.name} />
             <div className="flex flex-col min-w-0">
               <div className="flex items-center gap-1.5 truncate">
                 <span className={`text-xs font-bold truncate ${isLocal ? 'text-amber-300' : 'text-slate-100'}`}>

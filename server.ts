@@ -27,7 +27,9 @@ import {
   SafeZoneState,
   MatchVoteState,
   ActiveGrenade,
+  SectorMmoInfo,
 } from './src/types/game';
+import { resolveSectorMmoInfo } from './src/game/sectorData';
 import { HERO_DEFINITIONS, MAP_CONFIG, DEFAULT_PISTOL_STATS } from './src/game/constants';
 import { generateMap } from './src/game/mapData';
 import { CUSTOM_WEAPONS, SPECIAL_EFFECTS, TURRET_CONFIG } from './src/game/loadoutData';
@@ -41,6 +43,10 @@ import {
   getLeaderboard,
   recordMatchScore,
   SUPABASE_SQL_SCHEMA,
+  getSectorsFromDatabase,
+  getMmoSectorLiveState,
+  syncMmoBattleOutcome,
+  getMmoBounties,
 } from './server/db';
 
 const app = express();
@@ -108,8 +114,41 @@ app.post('/api/leaderboard/submit', async (req, res) => {
   }
 });
 
+app.get('/api/sectors', async (req, res) => {
+  try {
+    const sectors = await getSectorsFromDatabase();
+    res.json({ sectors });
+  } catch (err: any) {
+    res.json({ sectors: [] });
+  }
+});
+
+app.get('/api/mmo/sector/:sectorId', async (req, res) => {
+  try {
+    const sectorId = parseInt(req.params.sectorId, 10);
+    const liveState = await getMmoSectorLiveState(isNaN(sectorId) ? 8 : sectorId);
+    res.json({ success: true, liveState });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/mmo/bounties', async (req, res) => {
+  try {
+    const sectorId = req.query.sector ? parseInt(req.query.sector as string, 10) : undefined;
+    const bounties = await getMmoBounties(sectorId);
+    res.json({ success: true, bounties });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/rooms', (req, res) => {
   const sectorNames: Record<string, string> = {
+    'sector-8': 'SECTOR 8 // OUTPOST CRUCIBLE (MMO Contested Frontline)',
+    'sector-1': 'SECTOR 1 // PRIME CITADEL GARRISON (MMO Base)',
+    'sector-4': 'SECTOR 4 // INDUSTRIAL FOUNDRY COMPLEX (MMO Base)',
+    'sector-12': 'SECTOR 12 // DEEP RIM EXCAVATION (MMO Base)',
     'ffa-public': 'SECTOR ALPHA (FFA)',
     'tdm-public': 'SECTOR BRAVO (TDM)',
     'br-public': 'SECTOR CHARLIE (BR)',
@@ -122,7 +161,10 @@ app.get('/api/rooms', (req, res) => {
     const isFull = humanCount >= r.maxCapacity;
     let sectorName = sectorNames[id];
     if (!sectorName) {
-      if (id.startsWith('ffa-')) sectorName = `SECTOR ALPHA - ${id.split('-').pop()?.toUpperCase()}`;
+      if (id.startsWith('sector-') || /^\d+$/.test(id)) {
+        const sNum = id.replace('sector-', '');
+        sectorName = `SECTOR ${sNum} // MMO OUTPOST FRONTLINE`;
+      } else if (id.startsWith('ffa-')) sectorName = `SECTOR ALPHA - ${id.split('-').pop()?.toUpperCase()}`;
       else if (id.startsWith('tdm-')) sectorName = `SECTOR BRAVO - ${id.split('-').pop()?.toUpperCase()}`;
       else if (id.startsWith('br-')) sectorName = `SECTOR CHARLIE - ${id.split('-').pop()?.toUpperCase()}`;
       else sectorName = `OUTPOST ${id.toUpperCase()}`;
@@ -142,6 +184,7 @@ app.get('/api/rooms', (req, res) => {
       mapId: r.mapId,
       status: humanCount > 0 ? 'in_progress' : 'waiting',
       spectatorCount: r.spectators.size,
+      sectorMmoInfo: r.sectorMmoInfo,
     });
   }
   res.json({ rooms: list });
@@ -153,6 +196,7 @@ class GameRoom {
   public gameMode: GameMode = 'ffa';
   public mapId: MapId = 'cyber-complex';
   public enableBots: boolean = false;
+  public sectorMmoInfo: SectorMmoInfo;
   public teamScores: { alpha: number; bravo: number } = { alpha: 0, bravo: 0 };
   public walls: Wall[];
   public bushes: Bush[];
@@ -199,6 +243,7 @@ class GameRoom {
     this.id = id;
     this.gameMode = gameMode;
     this.mapId = mapId;
+    this.sectorMmoInfo = resolveSectorMmoInfo(id);
     // Bots are strictly only available when players select training mode
     this.enableBots = (gameMode === 'training');
     const map = generateMap(mapId);
@@ -248,12 +293,37 @@ class GameRoom {
 
     let assignedTeam: TeamId | undefined = undefined;
     if (this.gameMode === 'tdm') {
-      if (preferredTeam === 'alpha' || preferredTeam === 'bravo') {
-        assignedTeam = preferredTeam;
+      // Calculate active human players on each squad to guarantee balanced teams
+      const humanAlpha = Object.values(this.players).filter((p) => !p.isBot && p.team === 'alpha').length;
+      const humanBravo = Object.values(this.players).filter((p) => !p.isBot && p.team === 'bravo').length;
+      const totalAlpha = Object.values(this.players).filter((p) => p.team === 'alpha').length;
+      const totalBravo = Object.values(this.players).filter((p) => p.team === 'bravo').length;
+
+      if (preferredTeam === 'alpha') {
+        // If joining Alpha would unbalance real players (i.e. Alpha already has more real humans)
+        if (humanAlpha > humanBravo) {
+          assignedTeam = 'bravo';
+          console.log(`[TDM Balance] Player ${name} requested Alpha, but Alpha had ${humanAlpha} real players vs Bravo ${humanBravo}. Auto-assigned to Bravo for balance.`);
+        } else {
+          assignedTeam = 'alpha';
+        }
+      } else if (preferredTeam === 'bravo') {
+        // If joining Bravo would unbalance real players (i.e. Bravo already has more real humans)
+        if (humanBravo > humanAlpha) {
+          assignedTeam = 'alpha';
+          console.log(`[TDM Balance] Player ${name} requested Bravo, but Bravo had ${humanBravo} real players vs Alpha ${humanAlpha}. Auto-assigned to Alpha for balance.`);
+        } else {
+          assignedTeam = 'bravo';
+        }
       } else {
-        const alphaCount = Object.values(this.players).filter((p) => p.team === 'alpha').length;
-        const bravoCount = Object.values(this.players).filter((p) => p.team === 'bravo').length;
-        assignedTeam = alphaCount <= bravoCount ? 'alpha' : 'bravo';
+        // Auto-assign: prioritize balancing real humans first, then total players
+        if (humanAlpha < humanBravo) {
+          assignedTeam = 'alpha';
+        } else if (humanBravo < humanAlpha) {
+          assignedTeam = 'bravo';
+        } else {
+          assignedTeam = totalAlpha <= totalBravo ? 'alpha' : 'bravo';
+        }
       }
     }
 
@@ -1980,6 +2050,18 @@ class GameRoom {
           wins: isWinner ? 1 : 0,
           heroId: p.heroId,
         }).catch(() => {});
+
+        // Synchronize with persistent text MMO base & sector tables
+        syncMmoBattleOutcome({
+          roomId: this.id,
+          sectorNumber: this.sectorMmoInfo?.sectorNumber,
+          playerName: p.name,
+          score: p.score,
+          kills: p.kills,
+          deaths: p.deaths,
+          isWinner,
+          coinsAwarded: totalCoins,
+        }).catch(() => {});
       }
     }
 
@@ -2205,6 +2287,7 @@ class GameRoom {
       spectatorCount: this.spectators.size,
       maxServerCapacity: this.maxCapacity,
       connectedPlayersCount: this.getHumanPlayerCount(),
+      sectorMmoInfo: this.sectorMmoInfo,
     };
   }
 
@@ -2313,6 +2396,12 @@ findOrCreateServerForMode('ffa');
 findOrCreateServerForMode('tdm');
 findOrCreateServerForMode('br');
 findOrCreateServerForMode('training');
+
+// Pre-initialize persistent MMO Base Building Sector Shards
+getOrCreateRoom('sector-8', 'tdm'); // Sector 8 Outpost Crucible (Frontline Contested)
+getOrCreateRoom('sector-1', 'ffa'); // Sector 1 Prime Citadel Garrison
+getOrCreateRoom('sector-4', 'ffa'); // Sector 4 Industrial Foundry Complex
+getOrCreateRoom('sector-12', 'br'); // Sector 12 Deep Rim Excavation
 
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });

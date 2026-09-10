@@ -1,5 +1,15 @@
-import React from 'react';
-import { PlayerState, HeroDefinition, KillEvent, HeroId, GameMode, TeamId, SafeZone } from '../types/game';
+import React, { useState, useEffect } from 'react';
+import {
+  PlayerState,
+  HeroDefinition,
+  KillEvent,
+  HeroId,
+  GameMode,
+  TeamId,
+  SafeZone,
+  SectorMmoInfo,
+  MmoSectorLiveState,
+} from '../types/game';
 import {
   Volume2,
   VolumeX,
@@ -24,6 +34,8 @@ import {
   Eye,
   LogOut,
   Maximize2,
+  Globe,
+  Database,
 } from 'lucide-react';
 import { requestLandscapeMode } from '../utils/orientation';
 
@@ -46,6 +58,7 @@ interface TacticalHUDProps {
   spectatorCount?: number;
   isSpectator?: boolean;
   spectatedPlayer?: PlayerState | null;
+  sectorMmoInfo?: SectorMmoInfo;
   onOpenScoreboard?: () => void;
   onNextSpectate?: () => void;
   onPrevSpectate?: () => void;
@@ -83,6 +96,7 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
   spectatorCount = 0,
   isSpectator = false,
   spectatedPlayer,
+  sectorMmoInfo,
   onOpenScoreboard,
   onNextSpectate,
   onPrevSpectate,
@@ -101,6 +115,24 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
   onReturnToMenu,
 }) => {
   const [copied, setCopied] = React.useState(false);
+  const [showSectorDetails, setShowSectorDetails] = useState<boolean>(false);
+  const [mmoLiveState, setMmoLiveState] = useState<MmoSectorLiveState | null>(null);
+  const [isLoadingMmo, setIsLoadingMmo] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (showSectorDetails && sectorMmoInfo?.sectorNumber) {
+      setIsLoadingMmo(true);
+      fetch(`/api/mmo/sector/${sectorMmoInfo.sectorNumber}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.liveState) {
+            setMmoLiveState(data.liveState);
+          }
+        })
+        .catch((err) => console.warn('Could not fetch MMO sector state:', err))
+        .finally(() => setIsLoadingMmo(false));
+    }
+  }, [showSectorDetails, sectorMmoInfo?.sectorNumber]);
 
   const handleCopyLink = () => {
     const url = new URL(window.location.href);
@@ -284,6 +316,148 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
             >
               <Swords className="w-3.5 h-3.5 text-sky-400" />
               <span>LIVE PVP MATCH</span>
+            </div>
+          )}
+
+          {/* Sector MMO Persistent Link Badge */}
+          {sectorMmoInfo && (
+            <div className="relative">
+              <button
+                onClick={() => setShowSectorDetails(!showSectorDetails)}
+                className={`px-2.5 py-1.5 rounded border flex items-center gap-2 backdrop-blur-md shadow-lg transition-all cursor-pointer ${
+                  sectorMmoInfo.isFrontlineCombatZone
+                    ? 'bg-amber-950/80 border-amber-500/70 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
+                    : 'bg-slate-900/85 border-sky-500/50 text-sky-300'
+                }`}
+                title="Click to view Persistent MMO Sector Sync Intel"
+              >
+                <Database className="w-3.5 h-3.5 text-amber-400 animate-pulse shrink-0" />
+                <div className="flex flex-col text-left leading-tight">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] uppercase font-mono font-black tracking-wider text-white">
+                      SECTOR {sectorMmoInfo.sectorNumber}
+                    </span>
+                    <span className="text-[8px] font-mono px-1 py-0.2 bg-amber-500/20 text-amber-300 border border-amber-400/40 rounded">
+                      MMO SYNC
+                    </span>
+                  </div>
+                  <span className="text-[8px] font-mono text-slate-400 max-w-[130px] sm:max-w-[180px] truncate hidden sm:block">
+                    {sectorMmoInfo.baseStatus}
+                  </span>
+                </div>
+              </button>
+
+              {/* Sector MMO Details Modal / Flyout */}
+              {showSectorDetails && (
+                <div className="absolute top-full left-0 mt-2 w-84 sm:w-96 bg-[#080d19] border border-amber-500/60 rounded-xl p-4 shadow-2xl z-50 font-mono text-xs max-h-[80vh] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+                    <span className="font-black text-amber-400 text-xs uppercase flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                      <span>{sectorMmoInfo.sectorName}</span>
+                    </span>
+                    <button
+                      onClick={() => setShowSectorDetails(false)}
+                      className="text-slate-400 hover:text-white p-0.5 cursor-pointer text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-slate-300 mb-3 leading-relaxed">
+                    {sectorMmoInfo.mmoContext}
+                  </p>
+
+                  <div className="space-y-1.5 text-[10px] bg-slate-950/80 p-2.5 rounded border border-slate-800 mb-3">
+                    <div className="text-slate-400 flex justify-between">
+                      <span className="text-slate-500">BASE STATUS:</span>
+                      <span className="text-amber-300 font-bold">{sectorMmoInfo.baseStatus}</span>
+                    </div>
+                    <div className="text-slate-400 flex justify-between">
+                      <span className="text-slate-500">RESOURCE NODE:</span>
+                      <span className="text-sky-300 font-bold">{sectorMmoInfo.resourceNode}</span>
+                    </div>
+                    {mmoLiveState?.lastPhaseName && (
+                      <div className="text-slate-400 flex justify-between">
+                        <span className="text-slate-500">SECTOR PHASE:</span>
+                        <span className="text-emerald-400 font-bold">{mmoLiveState.lastPhaseName}</span>
+                      </div>
+                    )}
+                    {mmoLiveState?.dominance && (
+                      <div className="text-slate-400 flex justify-between">
+                        <span className="text-slate-500">DOMINANCE:</span>
+                        <span className="text-amber-400 font-bold">
+                          {mmoLiveState.dominance.alliance || 'CONTESTED'} ({mmoLiveState.dominance.percentage || 50}%)
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* MMO Sector Occupants (Commanders in Sector 8) */}
+                  {mmoLiveState?.occupants && mmoLiveState.occupants.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Active Outposts in Sector {sectorMmoInfo.sectorNumber}</span>
+                        <span className="text-[9px] text-slate-500">({mmoLiveState.occupants.length} Bases)</span>
+                      </div>
+                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                        {mmoLiveState.occupants.map((occ, idx) => (
+                          <div
+                            key={idx}
+                            className="bg-slate-900/90 border border-slate-800 p-1.5 rounded flex items-center justify-between text-[10px]"
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-200">{occ.username}</span>
+                              <span className="text-[9px] text-slate-400">
+                                {occ.baseName || 'Forward Outpost'} (HQ Lv.{occ.baseHqLevel || 1})
+                              </span>
+                            </div>
+                            <div className="text-right flex flex-col">
+                              {occ.totalPower !== undefined && (
+                                <span className="text-sky-400 font-bold">{occ.totalPower.toLocaleString()} PWR</span>
+                              )}
+                              {occ.warPoints !== undefined && (
+                                <span className="text-[9px] text-amber-400">{occ.warPoints} War Pts</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active Sector Bounties */}
+                  {mmoLiveState?.bounties && mmoLiveState.bounties.length > 0 && (
+                    <div className="mb-2">
+                      <div className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Sector Bounty Targets</span>
+                        <span className="text-[9px] text-amber-400 font-bold">Claim in Killzone</span>
+                      </div>
+                      <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                        {mmoLiveState.bounties.map((b) => (
+                          <div
+                            key={b.bountyId}
+                            className="bg-red-950/40 border border-red-500/40 p-1.5 rounded flex items-center justify-between text-[10px]"
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-bold text-red-300">{b.targetName}</span>
+                              <span className="text-[9px] text-slate-400 truncate max-w-[170px]">{b.reason}</span>
+                            </div>
+                            <span className="font-bold text-amber-400 shrink-0 ml-2">
+                              +{b.rewardGold} Gold
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {isLoadingMmo && (
+                    <div className="text-center py-2 text-slate-400 text-[10px] animate-pulse">
+                      Synchronizing with Sector {sectorMmoInfo.sectorNumber} database tables...
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

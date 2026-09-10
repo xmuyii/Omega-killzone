@@ -241,6 +241,19 @@ export const ShopModal: React.FC<ShopModalProps> = ({
         {/* Tab 1: Weapons & Special Guns */}
         {activeTab === 'weapons' && (
           <div className="mt-4 max-h-[50vh] overflow-y-auto pr-1 space-y-3">
+            {/* Tactical Intel Explaining Upgraded Weapons & Operative Synergies */}
+            <div className="bg-amber-950/25 border border-amber-500/40 rounded-xl p-3 flex items-start gap-2.5">
+              <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-[11px] font-mono leading-relaxed">
+                <span className="text-amber-300 font-bold uppercase block mb-0.5">
+                  Armory Protocol // Tier-2 Enhanced Weapon Systems
+                </span>
+                <p className="text-slate-300">
+                  Every weapon in the Armory is an <strong className="text-amber-400">upgraded version</strong> of default firearms with superior damage, fire-rate, or magazine capacity. While each gun features a designated <strong className="text-sky-400">Operative Synergy</strong>, all operatives can equip any weapon to gain enhanced frontline lethality.
+                </p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {(Object.values(CUSTOM_WEAPONS) as typeof CUSTOM_WEAPONS[WeaponId][]).map((w) => {
                 const isUnlocked = unlockedWeapons.includes(w.id);
@@ -262,41 +275,64 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                       {/* Weapon Header */}
                       <div className="flex items-start justify-between gap-2 mb-1.5">
                         <div>
-                          <span
-                            className="text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                            style={{
-                              backgroundColor: `${w.color}20`,
-                              color: w.color,
-                              border: `1px solid ${w.color}40`,
-                            }}
-                          >
-                            {w.category}
-                          </span>
-                          <h3 className="text-base font-black text-white mt-1 tracking-tight">
+                          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                            <span
+                              className="text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                              style={{
+                                backgroundColor: `${w.color}20`,
+                                color: w.color,
+                                border: `1px solid ${w.color}40`,
+                              }}
+                            >
+                              {w.category}
+                            </span>
+                            {w.upgradeTier && (
+                              <span className="text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                {w.upgradeTier}
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="text-base font-black text-white tracking-tight">
                             {w.name}
                           </h3>
                         </div>
 
                         {/* Status Badges */}
                         {isEquipped ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-black bg-amber-400 text-black shadow-[0_0_8px_rgba(245,158,11,0.8)]">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-black bg-amber-400 text-black shadow-[0_0_8px_rgba(245,158,11,0.8)] shrink-0">
                             EQUIPPED
                           </span>
                         ) : isUnlocked ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
                             OWNED
                           </span>
                         ) : (
-                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950/60 border border-amber-600/50 text-amber-400 flex items-center gap-1">
+                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950/60 border border-amber-600/50 text-amber-400 flex items-center gap-1 shrink-0">
                             <Coins className="w-3 h-3" />
                             {w.cost}
                           </span>
                         )}
                       </div>
 
-                      <p className="text-[11px] text-slate-400 line-clamp-2 mb-3">
+                      {/* Operative Synergy Tag */}
+                      {w.specializedHeroName && (
+                        <div className="inline-flex items-center gap-1 text-[10px] font-mono text-sky-300 bg-sky-950/40 border border-sky-800/50 px-2 py-0.5 rounded mb-2">
+                          <span className="text-slate-400 uppercase text-[8px] tracking-wider font-bold">Synergy:</span>
+                          <span className="font-semibold">{w.specializedHeroName}</span>
+                        </div>
+                      )}
+
+                      <p className="text-[11px] text-slate-400 line-clamp-2 mb-2">
                         {w.description}
                       </p>
+
+                      {/* Enhanced Stat Advantage Callout */}
+                      {w.statBonusText && (
+                        <div className="text-[10px] font-mono text-emerald-300 bg-emerald-950/30 border border-emerald-800/40 px-2 py-1 rounded mb-2.5 flex items-center gap-1.5">
+                          <Zap className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span>{w.statBonusText}</span>
+                        </div>
+                      )}
 
                       {/* Stat Bars */}
                       <div className="grid grid-cols-2 gap-2 text-[10px] font-mono border-t border-slate-800/80 pt-2 mb-3">

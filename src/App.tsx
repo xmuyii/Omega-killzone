@@ -31,7 +31,7 @@ import { ScoreboardModal } from './components/ScoreboardModal';
 import { MilitaryMainMenu } from './components/MilitaryMainMenu';
 import { LastWeekWinnersModal } from './components/LastWeekWinnersModal';
 import { OrientationGuard } from './components/OrientationGuard';
-import { requestLandscapeMode } from './utils/orientation';
+import { requestLandscapeMode, isTouchDevice, isCurrentlyLandscape } from './utils/orientation';
 import { INITIAL_LEADERBOARD_DATA } from './game/leaderboardData';
 import { LeaderboardData } from './types/game';
 import {
@@ -122,6 +122,21 @@ export default function App() {
       })
       .catch(() => {});
   }, [playerName]);
+
+  // Automatic orientation switch on touch for mobile phones
+  useEffect(() => {
+    const handleFirstTouchLandscape = () => {
+      if (isTouchDevice() && !isCurrentlyLandscape()) {
+        requestLandscapeMode().catch(() => {});
+      }
+    };
+    window.addEventListener('touchstart', handleFirstTouchLandscape, { passive: true });
+    window.addEventListener('click', handleFirstTouchLandscape, { passive: true });
+    return () => {
+      window.removeEventListener('touchstart', handleFirstTouchLandscape);
+      window.removeEventListener('click', handleFirstTouchLandscape);
+    };
+  }, []);
 
   // Scoreboard and Spectator state
   const [isScoreboardOpen, setIsScoreboardOpen] = useState<boolean>(false);
@@ -668,7 +683,9 @@ export default function App() {
       <canvas
         id="game-viewport"
         ref={canvasRef}
-        className="block w-full h-full cursor-crosshair touch-none relative z-0"
+        className={`block w-full h-full cursor-crosshair touch-none absolute inset-0 z-0 ${
+          hasJoined ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
       />
 
       {/* Tactical HUD (Only visible once joined) */}
@@ -692,6 +709,7 @@ export default function App() {
           spectatorCount={worldState?.spectatorCount || 0}
           isSpectator={isSpectator}
           spectatedPlayer={spectatedPlayerId ? worldState?.players[spectatedPlayerId] : undefined}
+          sectorMmoInfo={worldState?.sectorMmoInfo}
           onOpenScoreboard={() => setIsScoreboardOpen(true)}
           onNextSpectate={handleNextSpectate}
           onPrevSpectate={handlePrevSpectate}
@@ -817,7 +835,7 @@ export default function App() {
 
       {/* Home Screen / Military Main Menu (Shown before joining) */}
       {!hasJoined && !showDeployModal && (
-        <div className="relative z-40 w-full h-full">
+        <div className="fixed inset-0 z-40 overflow-y-auto">
           <MilitaryMainMenu
             playerName={playerName}
             playerCoins={playerCoins}

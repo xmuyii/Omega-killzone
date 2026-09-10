@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { PlayerState, KillEvent, HeroId, GameMode } from '../types/game';
 import { HERO_DEFINITIONS } from '../game/constants';
+import { CharacterAvatar } from './CharacterAvatar';
 import { Skull, Crosshair, Shield, Heart, ArrowRight, Swords, Sparkles, RefreshCw, RotateCw } from 'lucide-react';
 
 interface KillScreenModalProps {
@@ -141,13 +142,8 @@ export const KillScreenModal: React.FC<KillScreenModalProps> = ({
 
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              {/* Killer Operative Color Avatar */}
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center font-black text-lg text-white shadow-lg shrink-0 border border-white/20"
-                style={{ backgroundColor: killerHero.color }}
-              >
-                {killerHero.name.charAt(0)}
-              </div>
+              {/* Killer Operative Character Avatar */}
+              <CharacterAvatar heroId={killerHero.id} size="lg" callsign={killerName} />
 
               <div>
                 <div className="flex items-center gap-2">

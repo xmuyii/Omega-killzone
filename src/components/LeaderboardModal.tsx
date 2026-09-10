@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { LeaderboardData, LeaderboardTab, LeaderboardEntry } from '../types/game';
 import { HERO_DEFINITIONS } from '../game/constants';
 import { Trophy, Medal, X, Flame, Calendar, Clock, Award, Shield, User, Play } from 'lucide-react';
+import { CharacterAvatar } from './CharacterAvatar';
 
 interface LeaderboardModalProps {
   data: LeaderboardData;
@@ -91,7 +92,6 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 <tr className="text-[10px] uppercase text-slate-500 border-b border-slate-800 pb-2">
                   <th className="py-2 px-2">RANK</th>
                   <th className="py-2 px-3">OPERATOR</th>
-                  <th className="py-2 px-3">CLASS</th>
                   <th className="py-2 px-3 text-center">KILLS</th>
                   <th className="py-2 px-3 text-center">DEATHS</th>
                   <th className="py-2 px-3 text-center">K/D</th>
@@ -125,7 +125,8 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
 
                       {/* Name & Badge */}
                       <td className="py-2.5 px-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <CharacterAvatar heroId={entry.heroId} size="xs" callsign={entry.name} />
                           <span className="font-bold text-white uppercase group-hover:text-amber-400 transition-colors">
                             {entry.name}
                           </span>
@@ -134,17 +135,6 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                               {entry.badge}
                             </span>
                           )}
-                        </div>
-                      </td>
-
-                      {/* Class */}
-                      <td className="py-2.5 px-3">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className="w-2 h-2 rounded-full"
-                            style={{ backgroundColor: hero.color }}
-                          />
-                          <span className="text-slate-300 capitalize">{hero.name}</span>
                         </div>
                       </td>
 

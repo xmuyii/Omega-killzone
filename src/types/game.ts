@@ -72,6 +72,9 @@ export interface CustomWeaponDef {
   reloadTime: number;
   color: string;
   description: string;
+  specializedHeroName?: string;
+  upgradeTier?: string;
+  statBonusText?: string;
 }
 
 export interface CustomEffectDef {
@@ -308,6 +311,60 @@ export interface KillEvent {
   timestamp: number;
 }
 
+export interface MmoBounty {
+  bountyId: string;
+  targetId?: string;
+  targetName: string;
+  targetHomeSector?: number;
+  postedByName: string;
+  rewardGold: number;
+  reason?: string;
+  status: string;
+}
+
+export interface MmoCommanderOccupant {
+  userId?: string;
+  username: string;
+  level?: number;
+  totalPower?: number;
+  powerTier?: string;
+  baseName?: string;
+  baseHqLevel?: number;
+  allianceId?: string;
+  warPoints?: number;
+  baseShielded?: boolean;
+  isBountyHunter?: boolean;
+}
+
+export interface MmoSectorLiveState {
+  sectorId: number;
+  dominance?: any;
+  occupancy?: any;
+  lastPhaseName?: string;
+  lastUpdated?: string;
+  eventLog?: Array<{
+    timestamp: string;
+    type: string;
+    message: string;
+    commander?: string;
+    kills?: number;
+    victory?: boolean;
+  }>;
+  occupants: MmoCommanderOccupant[];
+  bounties: MmoBounty[];
+}
+
+export interface SectorMmoInfo {
+  sectorId: string;
+  sectorNumber: string;
+  sectorName: string;
+  mmoContext: string;
+  baseStatus: string;
+  resourceNode: string;
+  isFrontlineCombatZone: boolean;
+  liveState?: MmoSectorLiveState;
+}
+
 export interface GameWorldState {
   players: Record<string, PlayerState>;
   bullets: Bullet[];
@@ -330,6 +387,7 @@ export interface GameWorldState {
   spectatorCount?: number;
   maxServerCapacity?: number;
   connectedPlayersCount?: number;
+  sectorMmoInfo?: SectorMmoInfo;
 }
 
 export type ClientMessage =
@@ -411,6 +469,10 @@ export interface LeaderboardEntry {
   badge?: string;
   title?: string;
   lastActive?: string;
+  level?: number;
+  warPoints?: number;
+  baseName?: string;
+  weekKey?: string;
 }
 
 export interface LeaderboardData {
@@ -430,5 +492,6 @@ export interface ServerRoomInfo {
   playerCount: number;
   maxPlayers: number;
   status: 'lobby' | 'in_progress' | 'waiting';
+  sectorMmoInfo?: SectorMmoInfo;
 }
 

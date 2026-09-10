@@ -26,9 +26,13 @@ import {
   Copy,
   FileText,
   CheckCircle2,
+  X,
+  Database,
+  Globe,
 } from 'lucide-react';
 import { sounds } from '../game/audio';
 import { requestLandscapeMode } from '../utils/orientation';
+import { CharacterAvatar } from './CharacterAvatar';
 
 interface MilitaryMainMenuProps {
   playerName: string;
@@ -403,7 +407,10 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                           </span>
                           <span className="text-amber-400 font-bold">{entry.score.toLocaleString()} PTS</span>
                         </div>
-                        <div className="font-bold text-white truncate">{entry.name}</div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <CharacterAvatar heroId={entry.heroId} size="xs" callsign={entry.name} />
+                          <div className="font-bold text-white truncate">{entry.name}</div>
+                        </div>
                         <div className="text-[10px] text-slate-500 flex justify-between mt-1">
                           <span>{entry.kills} KILLS</span>
                           <span>{entry.kd} K/D</span>
@@ -415,7 +422,6 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                   {/* Ranks 4 to 10 Honor Roll */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
                     {(leaderboardData.thisWeek || []).slice(3, 10).map((entry, idx) => {
-                      const hero = HERO_DEFINITIONS[entry.heroId] || HERO_DEFINITIONS.sniper;
                       return (
                         <div
                           key={entry.id}
@@ -424,7 +430,7 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                         >
                           <div className="flex items-center gap-2 truncate">
                             <span className="text-slate-500 font-bold w-4">#{idx + 4}</span>
-                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: hero.color }} />
+                            <CharacterAvatar heroId={entry.heroId} size="xs" callsign={entry.name} />
                             <span className="font-bold text-white uppercase truncate">{entry.name}</span>
                           </div>
                           <div className="flex items-center gap-2 text-slate-400 text-[10px]">
@@ -446,12 +452,7 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
               </div>
 
               <div className="flex items-center gap-4 mb-4">
-                <div
-                  className="w-16 h-16 rounded-xl flex items-center justify-center font-black text-black text-2xl shadow-xl"
-                  style={{ backgroundColor: currentHero.color }}
-                >
-                  {currentHero.name.charAt(0)}
-                </div>
+                <CharacterAvatar heroId={currentHero.id} size="xl" callsign={currentHero.name} />
                 <div>
                   <div className="text-[10px] uppercase font-mono tracking-widest text-slate-500 font-bold">
                     FIXED CLASS // {currentHero.role.toUpperCase()}
@@ -578,12 +579,47 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
               </div>
             </div>
 
+            {/* PERSISTENT MMO BASE-BUILDING SECTOR INTEGRATION BANNER */}
+            <div className="mb-4 bg-gradient-to-r from-amber-950/40 via-slate-900 to-sky-950/40 border border-amber-500/40 rounded-xl p-3.5 shadow-lg">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/50 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+                    <Database className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono font-bold text-amber-400 uppercase tracking-wider">
+                        PERSISTENT MMO BASE LINK // SECTOR SYNCHRONIZATION
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-mono font-bold">
+                        SECTOR 8 CONNECTED
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-mono text-slate-300 mt-0.5">
+                      Combat in <span className="text-amber-300 font-bold">Omega Killzone 0</span> directly defends and secures base installations, defenses, and resource grids in your persistent MMO universe. When entering a sector like <span className="text-white font-bold">Sector 8</span>, matches settle live frontline territory control.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Quick Sector 8 Deploy Button */}
+                <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
+                  <button
+                    onClick={() => onJoinRoom('sector-8', 'tdm', false)}
+                    className="flex-1 md:flex-initial px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-mono font-black text-xs uppercase flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(245,158,11,0.4)] cursor-pointer transition-all"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-black" />
+                    <span>DEPLOY SECTOR 8</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Servers Table */}
             <div className="flex-1 overflow-y-auto pr-1">
               <table className="w-full text-left font-mono text-xs">
                 <thead>
                   <tr className="text-[10px] uppercase text-slate-500 border-b border-slate-800 pb-2">
-                    <th className="py-2.5 px-3">SERVER NAME</th>
+                    <th className="py-2.5 px-3">SERVER / SECTOR NAME</th>
                     <th className="py-2.5 px-3">REGION</th>
                     <th className="py-2.5 px-3">COMBAT MODE</th>
                     <th className="py-2.5 px-3 text-center">OPERATIVES</th>
@@ -608,10 +644,24 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                       >
                         {/* Name */}
                         <td className="py-3 px-3">
-                          <div className="font-bold text-white group-hover:text-amber-400 transition-colors">
-                            {room.name}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-white group-hover:text-amber-400 transition-colors">
+                              {room.name}
+                            </span>
+                            {room.sectorMmoInfo && (
+                              <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold">
+                                SECTOR {room.sectorMmoInfo.sectorNumber} MMO
+                              </span>
+                            )}
                           </div>
-                          <div className="text-[10px] text-slate-500">ID: {room.id}</div>
+                          <div className="text-[10px] text-slate-500 flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span>ID: {room.id}</span>
+                            {room.sectorMmoInfo && (
+                              <span className="text-amber-400/90 font-medium">
+                                • {room.sectorMmoInfo.baseStatus}
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Region */}
@@ -734,11 +784,8 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                         )}
                       </div>
 
-                      <div
-                        className="w-14 h-14 rounded-xl flex items-center justify-center font-black text-black text-xl mb-3 shadow-lg group-hover:scale-105 transition-transform"
-                        style={{ backgroundColor: hero.color }}
-                      >
-                        {hero.name.charAt(0)}
+                      <div className="mb-3 group-hover:scale-105 transition-transform">
+                        <CharacterAvatar heroId={hero.id} size="lg" callsign={hero.name} />
                       </div>
 
                       <h3 className="text-lg font-black font-mono text-white uppercase group-hover:text-amber-400 transition-colors">
@@ -818,9 +865,11 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                 </button>
                 <button
                   onClick={() => setActiveView('home')}
-                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs uppercase cursor-pointer"
+                  className="px-3.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-mono text-xs uppercase cursor-pointer flex items-center gap-1.5 border border-slate-700"
+                  title="Close Leaderboard & Return to Command Center"
                 >
-                  RETURN
+                  <X className="w-3.5 h-3.5" />
+                  <span>CLOSE</span>
                 </button>
               </div>
             </div>
@@ -859,7 +908,6 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                   <tr className="text-[10px] uppercase text-slate-400 border-b border-slate-800 bg-slate-900/80">
                     <th className="py-2.5 px-3">RANK</th>
                     <th className="py-2.5 px-3">OPERATOR</th>
-                    <th className="py-2.5 px-3">CLASS</th>
                     <th className="py-2.5 px-3 text-center">KILLS</th>
                     <th className="py-2.5 px-3 text-center">DEATHS</th>
                     <th className="py-2.5 px-3 text-center">K/D</th>
@@ -909,11 +957,8 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                           </div>
                         </td>
                         <td className="py-3 px-3">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="w-2.5 h-2.5 rounded-full"
-                              style={{ backgroundColor: hero.color }}
-                            />
+                          <div className="flex items-center gap-2.5">
+                            <CharacterAvatar heroId={entry.heroId} size="xs" callsign={entry.name} />
                             <div className="flex flex-col">
                               <span className="font-bold text-white text-xs">{entry.name}</span>
                               {entry.title && (
@@ -921,18 +966,6 @@ export const MilitaryMainMenu: React.FC<MilitaryMainMenuProps> = ({
                               )}
                             </div>
                           </div>
-                        </td>
-                        <td className="py-3 px-3">
-                          <span
-                            className="px-2 py-0.5 rounded text-[10px] font-bold uppercase border"
-                            style={{
-                              borderColor: `${hero.color}40`,
-                              backgroundColor: `${hero.color}15`,
-                              color: hero.color,
-                            }}
-                          >
-                            {hero.name}
-                          </span>
                         </td>
                         <td className="py-3 px-3 text-center text-rose-400 font-bold">
                           {entry.kills}
