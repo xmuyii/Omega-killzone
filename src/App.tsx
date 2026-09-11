@@ -98,6 +98,31 @@ export default function App() {
     return !sessionStorage.getItem('be_seen_last_week_v2');
   });
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardData>(INITIAL_LEADERBOARD_DATA);
+  const [bountyAlert, setBountyAlert] = useState<{
+    targetName: string;
+    targetId: string;
+    rewardGold: number;
+    reason?: string;
+    sectorNumber?: number;
+  } | null>(null);
+  const [bountyClaimed, setBountyClaimed] = useState<{
+    killerName: string;
+    killerId: string;
+    victimName: string;
+    rewardGold: number;
+    sectorNumber?: number;
+  } | null>(null);
+
+  // Sector 8 Teleportation & Bounty Lockout State
+  const [teleportCharges, setTeleportCharges] = useState<number>(5);
+  const [bountyTimeoutSeconds, setBountyTimeoutSeconds] = useState<number>(0);
+  const [teleportAlert, setTeleportAlert] = useState<{
+    playerName: string;
+    playerId: string;
+    isResident: boolean;
+    homeSector: number;
+    timestamp: number;
+  } | null>(null);
 
   // Sync leaderboards & persistent player tokens from database
   useEffect(() => {
@@ -111,13 +136,57 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (!playerName) return;
-    fetch(`/api/player/${encodeURIComponent(playerName)}`)
-      .then((res) => res.json())
+  const fetchPlayerStatus = useCallback((cName: string) => {
+    if (!cName) return;
+    fetch(`/api/player/timeout/${encodeURIComponent(cName)}`)
+      .then((r) => r.json())
       .then((data) => {
-        if (data?.profile?.tokens !== undefined) {
-          setPlayerCoins(data.profile.tokens);
+        if (data.isTimedOut && data.secondsRemaining > 0) {
+          setBountyTimeoutSeconds(data.secondsRemaining);
+        } else {
+          setBountyTimeoutSeconds(0);
+        }
+      })
+      .catch(() => {});
+
+    fetch(`/api/player/${encodeURIComponent(cName)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.profile) {
+          if (data.profile.teleportCharges !== undefined) {
+            setTeleportCharges(data.profile.teleportCharges);
+          }
+          if (data.profile.tokens !== undefined) {
+            setPlayerCoins(data.profile.tokens);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetchPlayerStatus(playerName);
+  }, [playerName, fetchPlayerStatus]);
+
+  useEffect(() => {
+    if (bountyTimeoutSeconds <= 0) return;
+    const interval = setInterval(() => {
+      setBountyTimeoutSeconds((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [bountyTimeoutSeconds]);
+
+  const handleRechargeTeleport = useCallback(() => {
+    fetch('/api/teleport/recharge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callsign: playerName, amount: 5 }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success && data.chargesRemaining !== undefined) {
+          setTeleportCharges(data.chargesRemaining);
+          sounds.playTeleport();
         }
       })
       .catch(() => {});
@@ -179,7 +248,17 @@ export default function App() {
 
   // Connect to WebSocket Server
   const connectWebSocket = useCallback(
-    (name: string, room: string, hero: HeroId, mode?: GameMode, team?: TeamId, bots?: boolean, spectate?: boolean) => {
+    (
+      name: string,
+      room: string,
+      hero: HeroId,
+      mode?: GameMode,
+      team?: TeamId,
+      bots?: boolean,
+      spectate?: boolean,
+      homeSector?: number,
+      isTeleport?: boolean
+    ) => {
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
@@ -215,6 +294,8 @@ export default function App() {
           gameMode: mode,
           enableBots: bots,
           isSpectator: spectate,
+          homeSector,
+          isTeleport,
         };
         ws.send(JSON.stringify(joinMsg));
 
@@ -300,6 +381,47 @@ export default function App() {
             }
           } else if (msg.type === 'streak') {
             setActiveStreakEvent(msg.streak);
+          } else if (msg.type === 'bounty_alert') {
+            setBountyAlert({
+              targetName: msg.targetName,
+              targetId: msg.targetId,
+              rewardGold: msg.rewardGold,
+              reason: msg.reason,
+              sectorNumber: msg.sectorNumber,
+            });
+            sounds.playBountyAlert();
+            setTimeout(() => setBountyAlert(null), 7000);
+          } else if (msg.type === 'bounty_claimed') {
+            setBountyClaimed({
+              killerName: msg.killerName,
+              killerId: msg.killerId,
+              victimName: msg.victimName,
+              rewardGold: msg.rewardGold,
+              sectorNumber: msg.sectorNumber,
+            });
+            sounds.playBountyClaimed();
+            setTimeout(() => setBountyClaimed(null), 7000);
+          } else if (msg.type === 'teleport_arrival') {
+            setTeleportAlert({
+              playerName: msg.playerName,
+              playerId: msg.playerId,
+              isResident: msg.isResident,
+              homeSector: msg.homeSector,
+              timestamp: msg.timestamp || Date.now(),
+            });
+            if (!msg.isResident) {
+              sounds.playIntruderAlert();
+            } else {
+              sounds.playTeleport();
+            }
+            setTimeout(() => {
+              setTeleportAlert((current) => (current && current.timestamp === msg.timestamp ? null : current));
+            }, 6500);
+          } else if (msg.type === 'bounty_timeout') {
+            setBountyTimeoutSeconds(msg.timeoutSeconds);
+            if (msg.timeoutSeconds > 0) {
+              sounds.playDeath();
+            }
           } else if (msg.type === 'match_ended') {
             setLastWinner(msg.winner);
             setCoinsEarned(msg.coinsAwarded || 0);
@@ -363,7 +485,9 @@ export default function App() {
     mode: GameMode,
     team?: TeamId,
     bots?: boolean,
-    spectate?: boolean
+    spectate?: boolean,
+    homeSector?: number,
+    isTeleport?: boolean
   ) => {
     requestLandscapeMode().catch(() => {});
     setPlayerName(name);
@@ -377,7 +501,7 @@ export default function App() {
     sessionStorage.setItem('be_player_name', name);
     localStorage.setItem('be_hero_id', hero);
     setHasJoined(true);
-    connectWebSocket(name, room, hero, mode, team, bots, spectate);
+    connectWebSocket(name, room, hero, mode, team, bots, spectate, homeSector, isTeleport);
   };
 
   // Cycle Spectator Target Operative
@@ -710,6 +834,9 @@ export default function App() {
           isSpectator={isSpectator}
           spectatedPlayer={spectatedPlayerId ? worldState?.players[spectatedPlayerId] : undefined}
           sectorMmoInfo={worldState?.sectorMmoInfo}
+          teleportAlert={teleportAlert}
+          bountyAlert={bountyAlert}
+          bountyClaimed={bountyClaimed}
           onOpenScoreboard={() => setIsScoreboardOpen(true)}
           onNextSpectate={handleNextSpectate}
           onPrevSpectate={handlePrevSpectate}
@@ -849,6 +976,7 @@ export default function App() {
               sessionStorage.setItem('be_player_name', newName);
             }}
             onJoinRoom={(targetRoomId, mode, asSpectator) => {
+              const isSector8 = targetRoomId.toLowerCase().includes('sector-8');
               handleJoinLobby(
                 playerName,
                 targetRoomId,
@@ -856,7 +984,9 @@ export default function App() {
                 mode,
                 undefined,
                 false,
-                asSpectator
+                asSpectator,
+                8,
+                isSector8
               );
             }}
             onOpenCustomLobby={() => setShowDeployModal(true)}
@@ -878,11 +1008,14 @@ export default function App() {
             equippedEffectId={equippedLoadout.effectId}
             playerCoins={playerCoins}
             turretCount={turretInventory}
+            teleportCharges={teleportCharges}
+            bountyTimeoutSeconds={bountyTimeoutSeconds}
+            onRechargeTeleport={handleRechargeTeleport}
             onOpenShop={() => setIsShopOpen(true)}
             onOpenSettings={() => setShowDeployModal(false)}
-            onJoin={(name, room, hero, mode, team, bots, spectate) => {
+            onJoin={(name, room, hero, mode, team, bots, spectate, homeSector, isTeleport) => {
               setShowDeployModal(false);
-              handleJoinLobby(name, room, hero, mode, team, bots, spectate);
+              handleJoinLobby(name, room, hero, mode, team, bots, spectate, homeSector, isTeleport);
             }}
           />
           <button

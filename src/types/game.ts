@@ -288,6 +288,13 @@ export interface PlayerState {
   primaryAmmo?: number;
   maxPrimaryAmmo?: number;
   brPlacement?: number;
+  hasBounty?: boolean;
+  bountyReward?: number;
+  bountyId?: string;
+  bountyReason?: string;
+  homeSector?: number;
+  isTimedOut?: boolean;
+  timeoutUntil?: number;
 }
 
 export interface KillEvent {
@@ -403,6 +410,8 @@ export type ClientMessage =
       effectId?: EffectId;
       turretCount?: number;
       isSpectator?: boolean;
+      homeSector?: number;
+      isTeleport?: boolean;
     }
   | { type: 'select_hero'; heroId: HeroId }
   | { type: 'input'; moveX: number; moveY: number; angle: number; isSprint?: boolean }
@@ -454,6 +463,37 @@ export type ServerMessage =
       gameMode: GameMode;
       walls: Wall[];
       bushes: Bush[];
+    }
+  | {
+      type: 'bounty_alert';
+      targetName: string;
+      targetId: string;
+      rewardGold: number;
+      reason?: string;
+      sectorNumber?: number;
+    }
+  | {
+      type: 'bounty_claimed';
+      killerName: string;
+      killerId: string;
+      victimName: string;
+      victimId: string;
+      rewardGold: number;
+      sectorNumber?: number;
+    }
+  | {
+      type: 'teleport_arrival';
+      playerName: string;
+      playerId: string;
+      isResident: boolean;
+      homeSector: number;
+      timestamp: number;
+    }
+  | {
+      type: 'bounty_timeout';
+      targetName: string;
+      timeoutSeconds: number;
+      reason: string;
     };
 
 export interface LeaderboardEntry {

@@ -29,6 +29,8 @@ export interface PlayerProfile {
   mmoCredits?: number;
   mmoEnergy?: number;
   mmoIsBountyHunter?: boolean;
+  teleportCharges?: number;
+  bountyTimeoutUntil?: number;
 }
 
 // Database directory & persistent backup files for local/standalone hosting (e.g. Railway without Supabase)
@@ -257,10 +259,14 @@ export async function getPlayerProfile(callsign: string): Promise<PlayerProfile>
       highScore: 0,
       unlockedItems: ['frag_grenade'],
       equippedHero: 'assault',
+      teleportCharges: 5,
       updatedAt: Date.now(),
     };
     playerProfilesCache.set(key, profile);
     persistProfilesToDisk();
+  }
+  if (typeof profile.teleportCharges !== 'number') {
+    profile.teleportCharges = 5;
   }
   return profile;
 }
@@ -284,6 +290,8 @@ export async function savePlayerProfile(profile: Partial<PlayerProfile> & { call
     highScore: Math.max(existing.highScore, profile.highScore || 0),
     unlockedItems: profile.unlockedItems || existing.unlockedItems,
     equippedHero: profile.equippedHero || existing.equippedHero,
+    teleportCharges: profile.teleportCharges !== undefined ? profile.teleportCharges : (existing.teleportCharges ?? 5),
+    bountyTimeoutUntil: profile.bountyTimeoutUntil !== undefined ? profile.bountyTimeoutUntil : existing.bountyTimeoutUntil,
     updatedAt: Date.now(),
   };
 
@@ -325,6 +333,60 @@ export async function updatePlayerTokens(callsign: string, deltaTokens: number):
   const newTokens = Math.max(0, prof.tokens + deltaTokens);
   await savePlayerProfile({ ...prof, tokens: newTokens });
   return newTokens;
+}
+
+/**
+ * Deducts 1 teleport charge for warping into Sector 8
+ */
+export async function deductTeleportCharge(callsign: string): Promise<{ success: boolean; chargesRemaining: number; error?: string }> {
+  const prof = await getPlayerProfile(callsign);
+  const currentCharges = typeof prof.teleportCharges === 'number' ? prof.teleportCharges : 5;
+  if (currentCharges <= 0) {
+    return { success: false, chargesRemaining: 0, error: 'NO TELEPORT CHARGES REMAINING. Replenish charges to warp to Sector 8.' };
+  }
+  const updated = await savePlayerProfile({
+    callsign: prof.callsign,
+    teleportCharges: currentCharges - 1,
+  });
+  return { success: true, chargesRemaining: updated.teleportCharges ?? 0 };
+}
+
+/**
+ * Replenishes teleport charges
+ */
+export async function rechargeTeleportCharges(callsign: string, amount: number = 5): Promise<number> {
+  const prof = await getPlayerProfile(callsign);
+  const current = typeof prof.teleportCharges === 'number' ? prof.teleportCharges : 0;
+  const newCharges = Math.min(10, current + amount);
+  const updated = await savePlayerProfile({
+    callsign: prof.callsign,
+    teleportCharges: newCharges,
+  });
+  return updated.teleportCharges ?? newCharges;
+}
+
+/**
+ * Sets bounty elimination timeout penalty (default 60 seconds)
+ */
+export async function setBountyTimeout(callsign: string, seconds: number = 60): Promise<number> {
+  const timeoutUntil = Date.now() + seconds * 1000;
+  await savePlayerProfile({
+    callsign,
+    bountyTimeoutUntil: timeoutUntil,
+  });
+  return timeoutUntil;
+}
+
+/**
+ * Checks if a player has an active bounty elimination lockout from Sector 8
+ */
+export async function isPlayerTimedOut(callsign: string): Promise<{ isTimedOut: boolean; secondsRemaining: number }> {
+  const prof = await getPlayerProfile(callsign);
+  if (!prof.bountyTimeoutUntil) {
+    return { isTimedOut: false, secondsRemaining: 0 };
+  }
+  const remaining = Math.max(0, Math.ceil((prof.bountyTimeoutUntil - Date.now()) / 1000));
+  return { isTimedOut: remaining > 0, secondsRemaining: remaining };
 }
 
 /**
@@ -969,4 +1031,549 @@ export async function getMmoBounties(sectorId?: number): Promise<MmoBounty[]> {
   }
   return [];
 }
+
+/**
+ * Helper to identify bots: Bots must NEVER appear on any leaderboard!
+ */
+export function isBotPlayer(name: string, isBotFlag?: boolean): boolean {
+  if (isBotFlag) return true;
+  if (!name) return true;
+  const clean = name.trim().toLowerCase();
+  if (clean.startsWith('bot-') || clean.startsWith('bot_') || clean.startsWith('[bot]') || clean.startsWith('bot ')) {
+    return true;
+  }
+  const standardBots = [
+    'viper', 'spectre', 'phantom', 'reaper', 'nexus', 'ares', 'cortex',
+    'sentinel', 'zero', 'titan', 'valkyrie', 'bastion', 'mirage', 'blitz', 'warden'
+  ];
+  return standardBots.includes(clean);
+}
+
+/**
+ * Checks if an operative entering Sector 8 has an active open bounty on them.
+ */
+export async function checkPlayerBounty(
+  playerName: string,
+  sectorNumber: number = 8
+): Promise<MmoBounty | null> {
+  const sb = initSupabase();
+  const cleanName = playerName.trim().toUpperCase();
+
+  if (sb) {
+    try {
+      const { data, error } = await sb
+        .from('bounty_board')
+        .select('*')
+        .ilike('target_name', cleanName)
+        .eq('status', 'open')
+        .maybeSingle();
+
+      if (!error && data) {
+        return {
+          bountyId: data.bounty_id,
+          targetId: data.target_id,
+          targetName: data.target_name,
+          targetHomeSector: data.target_home_sector,
+          postedByName: data.posted_by_name,
+          rewardGold: data.reward_gold || 250,
+          reason: data.reason || 'Wanted by Sector 8 High Command',
+          status: 'open',
+        };
+      }
+    } catch (err) {
+      console.warn('[Bounty Check] Error checking player bounty:', err);
+    }
+  }
+
+  // Fallback check against known open high-profile rogue targets
+  const fallbackBounties = [
+    { targetName: 'VIPER_ONE', rewardGold: 750, reason: 'High-Value Outpost Infiltrator' },
+    { targetName: 'COMMANDER_KANE', rewardGold: 500, reason: 'Rogue Sector 8 Warlord' },
+    { targetName: 'CYBER_STORM', rewardGold: 400, reason: 'Hostile Dominance Assault' },
+  ];
+  const match = fallbackBounties.find((b) => b.targetName.toUpperCase() === cleanName);
+  if (match) {
+    return {
+      bountyId: `bounty-${match.targetName.toLowerCase()}`,
+      targetName: match.targetName,
+      targetHomeSector: 8,
+      postedByName: 'Sector 8 High Command',
+      rewardGold: match.rewardGold,
+      reason: match.reason,
+      status: 'open',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Resolves a claimed bounty:
+ * - Updates bounty_board row to 'claimed' with killer callsign and claimed_at timestamp
+ * - Directly deposits reward gold, hunter kills, and war points into killer's record in public.players
+ */
+export async function claimMmoBounty(params: {
+  bountyId?: string;
+  targetName: string;
+  killerName: string;
+  rewardGold: number;
+  isKillerBot?: boolean;
+}): Promise<boolean> {
+  console.log(
+    `[Bounty System] Processing bounty claim on ${params.targetName} by ${params.killerName} (${params.rewardGold} Gold)`
+  );
+  const sb = initSupabase();
+  if (sb) {
+    try {
+      if (params.bountyId) {
+        await sb
+          .from('bounty_board')
+          .update({
+            status: 'claimed',
+            claimed_by_id: params.killerName,
+            claimed_at: new Date().toISOString(),
+          })
+          .eq('bounty_id', params.bountyId);
+      } else {
+        await sb
+          .from('bounty_board')
+          .update({
+            status: 'claimed',
+            claimed_by_id: params.killerName,
+            claimed_at: new Date().toISOString(),
+          })
+          .ilike('target_name', params.targetName)
+          .eq('status', 'open');
+      }
+
+      // If killer is not a bot, deposit reward gold into public.players
+      if (!params.isKillerBot) {
+        const { data: pRow } = await sb
+          .from('players')
+          .select('id, gold, hunter_kills, war_points')
+          .ilike('username', params.killerName)
+          .maybeSingle();
+
+        if (pRow) {
+          await sb
+            .from('players')
+            .update({
+              gold: (pRow.gold || 0) + params.rewardGold,
+              hunter_kills: (pRow.hunter_kills || 0) + 1,
+              war_points: (pRow.war_points || 0) + 50,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', pRow.id);
+        }
+      }
+      return true;
+    } catch (err) {
+      console.warn('[Bounty System] Error resolving bounty in Supabase:', err);
+    }
+  }
+  return false;
+}
+
+/**
+ * =========================================================================
+ * SECTOR 8 DEDICATED LEADERBOARD GROUP
+ * - Tables:
+ *    sector8_leaderboard_alltime
+ *    sector8_leaderboard_weekly
+ *    sector8_leaderboard_daily
+ *    sector8_last_week_winners
+ * - user_id is the player username in the game and across all sectors.
+ * - Bots are NEVER present on the leaderboard!
+ * =========================================================================
+ */
+
+export const SECTOR8_SQL_MIGRATION = `-- =========================================================================
+-- SECTOR 8 DEDICATED LEADERBOARD GROUP MIGRATIONS (OMEGA KILLZONE 0)
+-- Dedicated tournament tables specifically for Sector 8.
+-- Note: user_id becomes the player username in the game and across all sectors.
+-- Bots are never present on the leaderboard.
+-- Run this in your Supabase SQL Editor:
+-- =========================================================================
+
+-- 1. Sector 8 All-Time Leaderboard
+create table if not exists sector8_leaderboard_alltime (
+  user_id text primary key, -- Player username in the game and across all sectors
+  username text not null,
+  hero_id text default 'assault',
+  kills integer default 0,
+  deaths integer default 0,
+  wins integer default 0,
+  matches integer default 0,
+  score integer default 0,
+  all_time_points integer default 0,
+  war_points integer default 0,
+  kd numeric(5,2) default 0.00,
+  level integer default 1,
+  badge text,
+  title text default 'Sector 8 Veteran',
+  last_active timestamp with time zone default timezone('utc'::text, now()),
+  updated_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+-- 2. Sector 8 Weekly Tournament Leaderboard
+create table if not exists sector8_leaderboard_weekly (
+  user_id text primary key, -- Player username
+  username text not null,
+  hero_id text default 'assault',
+  kills integer default 0,
+  deaths integer default 0,
+  wins integer default 0,
+  matches integer default 0,
+  weekly_points integer default 0,
+  score integer default 0,
+  kd numeric(5,2) default 0.00,
+  level integer default 1,
+  badge text,
+  week_key text,
+  updated_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+-- 3. Sector 8 Daily Combat Cycle Leaderboard
+create table if not exists sector8_leaderboard_daily (
+  user_id text primary key, -- Player username
+  username text not null,
+  hero_id text default 'assault',
+  kills integer default 0,
+  deaths integer default 0,
+  wins integer default 0,
+  daily_points integer default 0,
+  score integer default 0,
+  kd numeric(5,2) default 0.00,
+  level integer default 1,
+  badge text,
+  day_key text,
+  updated_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+-- 4. Sector 8 Last Week Winners Archive
+create table if not exists sector8_last_week_winners (
+  id bigserial primary key,
+  user_id text not null, -- Player username
+  username text not null,
+  hero_id text default 'assault',
+  rank integer not null,
+  points integer not null,
+  kills integer default 0,
+  deaths integer default 0,
+  wins integer default 0,
+  kd numeric(5,2) default 0.00,
+  level integer default 1,
+  badge text default 'SECTOR 8 ACE',
+  week_key text,
+  created_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+-- Row Level Security & Access Policies
+alter table sector8_leaderboard_alltime enable row level security;
+alter table sector8_leaderboard_weekly enable row level security;
+alter table sector8_leaderboard_daily enable row level security;
+alter table sector8_last_week_winners enable row level security;
+
+create policy "Allow all read operations" on sector8_leaderboard_alltime for select using (true);
+create policy "Allow all write operations" on sector8_leaderboard_alltime for all using (true);
+
+create policy "Allow all read operations" on sector8_leaderboard_weekly for select using (true);
+create policy "Allow all write operations" on sector8_leaderboard_weekly for all using (true);
+
+create policy "Allow all read operations" on sector8_leaderboard_daily for select using (true);
+create policy "Allow all write operations" on sector8_leaderboard_daily for all using (true);
+
+create policy "Allow all read operations" on sector8_last_week_winners for select using (true);
+create policy "Allow all write operations" on sector8_last_week_winners for all using (true);
+
+-- High-Performance Indexes
+create index if not exists idx_s8_alltime_score on sector8_leaderboard_alltime (score desc);
+create index if not exists idx_s8_weekly_pts on sector8_leaderboard_weekly (weekly_points desc);
+create index if not exists idx_s8_daily_pts on sector8_leaderboard_daily (daily_points desc);
+create index if not exists idx_s8_lww_rank on sector8_last_week_winners (rank asc);
+`;
+
+// Initial human-only fallback cache for Sector 8 (Bots are strictly excluded!)
+const sector8DefaultCache: LeaderboardData = {
+  daily: [
+    { id: 's8d-1', name: 'GHOST_REAPER', heroId: 'assault', kills: 42, deaths: 8, wins: 6, score: 2840, rank: 1, kd: '5.25', badge: 'OUTPOST DEFENDER #1', title: 'Level 28 Sector 8 Ace' },
+    { id: 's8d-2', name: 'VANGUARD_8', heroId: 'sniper', kills: 38, deaths: 9, wins: 5, score: 2490, rank: 2, kd: '4.22', badge: 'APEX SNIPER', title: 'Level 25 Sharpshooter Lead' },
+    { id: 's8d-3', name: 'IRON_CITADEL', heroId: 'shotgun', kills: 31, deaths: 11, wins: 4, score: 2150, rank: 3, kd: '2.81', badge: 'BREACH COMMANDER', title: 'Level 22 Heavy Breacher' },
+    { id: 's8d-4', name: 'CYBER_VALKYRIE', heroId: 'marksman', kills: 27, deaths: 10, wins: 3, score: 1880, rank: 4, kd: '2.70', badge: 'RECON ELITE', title: 'Level 20 Deadeye Vanguard' },
+    { id: 's8d-5', name: 'OMEGA_RAVEN', heroId: 'assault', kills: 24, deaths: 12, wins: 3, score: 1650, rank: 5, kd: '2.00', title: 'Level 18 Commando' },
+  ],
+  thisWeek: [
+    { id: 's8w-1', name: 'GHOST_REAPER', heroId: 'assault', kills: 185, deaths: 36, wins: 28, score: 12450, rank: 1, kd: '5.14', badge: 'TOURNAMENT APEX', title: 'Level 28 Grand Commander' },
+    { id: 's8w-2', name: 'VANGUARD_8', heroId: 'sniper', kills: 162, deaths: 41, wins: 24, score: 10920, rank: 2, kd: '3.95', badge: 'OUTPOST TITAN', title: 'Level 25 Sharpshooter Lead' },
+    { id: 's8w-3', name: 'IRON_CITADEL', heroId: 'shotgun', kills: 139, deaths: 48, wins: 19, score: 9450, rank: 3, kd: '2.89', badge: 'CITADEL DEFENDER', title: 'Level 22 Heavy Lead' },
+    { id: 's8w-4', name: 'CYBER_VALKYRIE', heroId: 'marksman', kills: 118, deaths: 45, wins: 17, score: 8120, rank: 4, kd: '2.62', title: 'Level 20 Recon Commander' },
+  ],
+  lastWeek: [
+    { id: 's8lw-1', name: 'GHOST_REAPER', heroId: 'assault', kills: 240, deaths: 45, wins: 35, score: 15800, rank: 1, kd: '5.33', badge: 'SECTOR 8 CHAMPION', title: 'Tournament Gold Victor', weekKey: '2025-W10' },
+    { id: 's8lw-2', name: 'VANGUARD_8', heroId: 'sniper', kills: 198, deaths: 52, wins: 30, score: 13400, rank: 2, kd: '3.80', badge: 'SILVER PODIUM', title: 'Tournament Silver Victor', weekKey: '2025-W10' },
+    { id: 's8lw-3', name: 'IRON_CITADEL', heroId: 'shotgun', kills: 170, deaths: 60, wins: 24, score: 11200, rank: 3, kd: '2.83', badge: 'BRONZE PODIUM', title: 'Tournament Bronze Victor', weekKey: '2025-W10' },
+  ],
+  allTime: [
+    { id: 's8at-1', name: 'GHOST_REAPER', heroId: 'assault', kills: 840, deaths: 160, wins: 140, score: 58900, rank: 1, kd: '5.25', badge: 'SECTOR 8 LEGEND #1', title: 'Level 35 Grand General' },
+    { id: 's8at-2', name: 'VANGUARD_8', heroId: 'sniper', kills: 710, deaths: 180, wins: 115, score: 49800, rank: 2, kd: '3.94', badge: 'LEGENDARY SNIPER', title: 'Level 32 Sharpshooter Apex' },
+    { id: 's8at-3', name: 'IRON_CITADEL', heroId: 'shotgun', kills: 630, deaths: 210, wins: 98, score: 43200, rank: 3, kd: '3.00', badge: 'CITADEL TITAN', title: 'Level 30 Fortress Commander' },
+  ],
+};
+
+/**
+ * Fetch dedicated Sector 8 leaderboards from Supabase or memory cache.
+ * Excludes bots strictly!
+ */
+export async function getSector8Leaderboard(): Promise<LeaderboardData> {
+  const sb = initSupabase();
+  const s8Data: LeaderboardData = {
+    daily: [...sector8DefaultCache.daily],
+    thisWeek: [...sector8DefaultCache.thisWeek],
+    lastWeek: [...sector8DefaultCache.lastWeek],
+    allTime: [...sector8DefaultCache.allTime],
+  };
+
+  if (sb) {
+    try {
+      // 1. Daily
+      const { data: dailyRows } = await sb
+        .from('sector8_leaderboard_daily')
+        .select('*')
+        .order('score', { ascending: false })
+        .limit(20);
+
+      if (Array.isArray(dailyRows) && dailyRows.length > 0) {
+        const humanRows = dailyRows.filter((r) => !isBotPlayer(r.username || r.user_id));
+        if (humanRows.length > 0) {
+          s8Data.daily = humanRows.map((r, idx) => ({
+            id: `s8-d-${r.user_id || idx}`,
+            name: (r.username || r.user_id).toUpperCase(),
+            heroId: (r.hero_id as HeroId) || 'assault',
+            kills: r.kills || 0,
+            deaths: r.deaths || 0,
+            wins: r.wins || 0,
+            score: r.score || r.daily_points || 0,
+            rank: idx + 1,
+            kd: String(r.kd || '0.00'),
+            badge: idx === 0 ? 'SECTOR 8 #1' : idx < 3 ? 'OUTPOST DEFENDER' : undefined,
+            title: r.badge || 'Sector 8 Combatant',
+            level: r.level || 1,
+          }));
+        }
+      }
+
+      // 2. Weekly
+      const { data: weeklyRows } = await sb
+        .from('sector8_leaderboard_weekly')
+        .select('*')
+        .order('weekly_points', { ascending: false })
+        .limit(20);
+
+      if (Array.isArray(weeklyRows) && weeklyRows.length > 0) {
+        const humanRows = weeklyRows.filter((r) => !isBotPlayer(r.username || r.user_id));
+        if (humanRows.length > 0) {
+          s8Data.thisWeek = humanRows.map((r, idx) => ({
+            id: `s8-w-${r.user_id || idx}`,
+            name: (r.username || r.user_id).toUpperCase(),
+            heroId: (r.hero_id as HeroId) || 'assault',
+            kills: r.kills || 0,
+            deaths: r.deaths || 0,
+            wins: r.wins || 0,
+            score: r.weekly_points || r.score || 0,
+            rank: idx + 1,
+            kd: String(r.kd || '0.00'),
+            badge: idx === 0 ? 'WEEKLY APEX CHAMPION' : idx < 3 ? 'OUTPOST TITAN' : undefined,
+            title: r.badge || 'Sector 8 Vanguard',
+            level: r.level || 1,
+          }));
+        }
+      }
+
+      // 3. Last Week Winners
+      const { data: lwwRows } = await sb
+        .from('sector8_last_week_winners')
+        .select('*')
+        .order('rank', { ascending: true })
+        .limit(10);
+
+      if (Array.isArray(lwwRows) && lwwRows.length > 0) {
+        const humanRows = lwwRows.filter((r) => !isBotPlayer(r.username || r.user_id));
+        if (humanRows.length > 0) {
+          s8Data.lastWeek = humanRows.map((r, idx) => ({
+            id: `s8-lww-${r.id || r.user_id || idx}`,
+            name: (r.username || r.user_id).toUpperCase(),
+            heroId: (r.hero_id as HeroId) || 'assault',
+            kills: r.kills || 0,
+            deaths: r.deaths || 0,
+            wins: r.wins || 0,
+            score: r.points || 0,
+            rank: r.rank || (idx + 1),
+            kd: String(r.kd || '0.00'),
+            badge: r.badge || 'SECTOR 8 ACE',
+            title: `Level ${r.level || 1} Outpost Victor`,
+            level: r.level || 1,
+            weekKey: r.week_key,
+          }));
+        }
+      }
+
+      // 4. All-Time
+      const { data: allTimeRows } = await sb
+        .from('sector8_leaderboard_alltime')
+        .select('*')
+        .order('score', { ascending: false })
+        .limit(20);
+
+      if (Array.isArray(allTimeRows) && allTimeRows.length > 0) {
+        const humanRows = allTimeRows.filter((r) => !isBotPlayer(r.username || r.user_id));
+        if (humanRows.length > 0) {
+          s8Data.allTime = humanRows.map((r, idx) => ({
+            id: `s8-at-${r.user_id || idx}`,
+            name: (r.username || r.user_id).toUpperCase(),
+            heroId: (r.hero_id as HeroId) || 'assault',
+            kills: r.kills || 0,
+            deaths: r.deaths || 0,
+            wins: r.wins || 0,
+            score: r.score || r.all_time_points || 0,
+            rank: idx + 1,
+            kd: String(r.kd || '0.00'),
+            badge: idx === 0 ? 'SECTOR 8 LEGEND #1' : idx < 3 ? 'HALL OF FAME' : undefined,
+            title: r.badge || 'Grand Sector Commander',
+            level: r.level || 1,
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn('[Sector 8 Leaderboard] Query error (tables may not exist yet):', err);
+    }
+  }
+
+  return s8Data;
+}
+
+/**
+ * Record match score into Sector 8 Leaderboards:
+ * - Bots are strictly excluded.
+ * - user_id is the player's username.
+ */
+export async function recordSector8MatchScore(entry: {
+  name: string;
+  score: number;
+  kills: number;
+  deaths: number;
+  wins: number;
+  heroId: HeroId;
+  isBot?: boolean;
+}): Promise<void> {
+  // CRITICAL RULE: Bots are never present on the leaderboard!
+  if (isBotPlayer(entry.name, entry.isBot) || entry.score <= 0) {
+    return;
+  }
+
+  const cleanUsername = entry.name.trim().toUpperCase();
+  const kd = (entry.kills / Math.max(1, entry.deaths)).toFixed(2);
+
+  // Update in-memory cache
+  const updateList = (list: LeaderboardEntry[], isPoints: boolean) => {
+    const existingIdx = list.findIndex((e) => e.name === cleanUsername);
+    if (existingIdx !== -1) {
+      if (entry.score > list[existingIdx].score) {
+        list[existingIdx] = {
+          ...list[existingIdx],
+          score: entry.score,
+          kills: Math.max(list[existingIdx].kills, entry.kills),
+          kd: parseFloat(kd) > parseFloat(list[existingIdx].kd) ? kd : list[existingIdx].kd,
+          heroId: entry.heroId,
+          wins: list[existingIdx].wins + entry.wins,
+        };
+      }
+    } else {
+      list.push({
+        id: `s8-entry-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: cleanUsername,
+        heroId: entry.heroId,
+        kills: entry.kills,
+        deaths: entry.deaths,
+        wins: entry.wins,
+        score: entry.score,
+        rank: 1,
+        kd,
+        badge: entry.score >= 2500 ? 'OUTPOST DOMINATOR' : entry.score >= 1200 ? 'SECTOR 8 ACE' : undefined,
+        title: 'Sector 8 Operative',
+      });
+    }
+    list.sort((a, b) => b.score - a.score);
+    list.forEach((item, idx) => {
+      item.rank = idx + 1;
+    });
+    return list.slice(0, 15);
+  };
+
+  sector8DefaultCache.daily = updateList(sector8DefaultCache.daily, false);
+  sector8DefaultCache.thisWeek = updateList(sector8DefaultCache.thisWeek, true);
+  sector8DefaultCache.allTime = updateList(sector8DefaultCache.allTime, true);
+
+  // Async push to Supabase if configured
+  const sb = initSupabase();
+  if (sb) {
+    try {
+      // 1. Upsert into sector8_leaderboard_daily (user_id = cleanUsername)
+      await sb.from('sector8_leaderboard_daily').upsert(
+        {
+          user_id: cleanUsername,
+          username: cleanUsername,
+          hero_id: entry.heroId,
+          kills: entry.kills,
+          deaths: entry.deaths,
+          wins: entry.wins,
+          score: entry.score,
+          daily_points: entry.score,
+          kd: Number(kd),
+          badge: entry.score >= 2500 ? 'OUTPOST DOMINATOR' : 'SECTOR 8 VETERAN',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
+
+      // 2. Upsert into sector8_leaderboard_weekly
+      await sb.from('sector8_leaderboard_weekly').upsert(
+        {
+          user_id: cleanUsername,
+          username: cleanUsername,
+          hero_id: entry.heroId,
+          kills: entry.kills,
+          deaths: entry.deaths,
+          wins: entry.wins,
+          weekly_points: entry.score,
+          score: entry.score,
+          kd: Number(kd),
+          badge: entry.score >= 2500 ? 'TOURNAMENT APEX' : 'OUTPOST TITAN',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
+
+      // 3. Upsert into sector8_leaderboard_alltime
+      await sb.from('sector8_leaderboard_alltime').upsert(
+        {
+          user_id: cleanUsername,
+          username: cleanUsername,
+          hero_id: entry.heroId,
+          kills: entry.kills,
+          deaths: entry.deaths,
+          wins: entry.wins,
+          score: entry.score,
+          all_time_points: entry.score,
+          kd: Number(kd),
+          badge: entry.score >= 2500 ? 'SECTOR 8 LEGEND' : 'OUTPOST DEFENDER',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
+    } catch (err) {
+      console.warn('[Database] Could not write score to Sector 8 Supabase tables:', err);
+    }
+  }
+}
+
 

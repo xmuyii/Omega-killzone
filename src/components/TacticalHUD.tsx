@@ -36,6 +36,7 @@ import {
   Maximize2,
   Globe,
   Database,
+  Trophy,
 } from 'lucide-react';
 import { requestLandscapeMode } from '../utils/orientation';
 
@@ -59,6 +60,27 @@ interface TacticalHUDProps {
   isSpectator?: boolean;
   spectatedPlayer?: PlayerState | null;
   sectorMmoInfo?: SectorMmoInfo;
+  teleportAlert?: {
+    playerName: string;
+    playerId: string;
+    isResident: boolean;
+    homeSector: number;
+    timestamp: number;
+  } | null;
+  bountyAlert?: {
+    targetName: string;
+    targetId: string;
+    rewardGold: number;
+    reason?: string;
+    sectorNumber?: number;
+  } | null;
+  bountyClaimed?: {
+    killerName: string;
+    killerId: string;
+    victimName: string;
+    rewardGold: number;
+    sectorNumber?: number;
+  } | null;
   onOpenScoreboard?: () => void;
   onNextSpectate?: () => void;
   onPrevSpectate?: () => void;
@@ -97,6 +119,9 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
   isSpectator = false,
   spectatedPlayer,
   sectorMmoInfo,
+  teleportAlert,
+  bountyAlert,
+  bountyClaimed,
   onOpenScoreboard,
   onNextSpectate,
   onPrevSpectate,
@@ -118,6 +143,12 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
   const [showSectorDetails, setShowSectorDetails] = useState<boolean>(false);
   const [mmoLiveState, setMmoLiveState] = useState<MmoSectorLiveState | null>(null);
   const [isLoadingMmo, setIsLoadingMmo] = useState<boolean>(false);
+
+  const activeBountyPlayer = React.useMemo(() => {
+    return (Object.values(allPlayers) as PlayerState[]).find(
+      (p) => p.isAlive && p.hasBounty && (p.bountyReward || 0) > 0
+    );
+  }, [allPlayers]);
 
   useEffect(() => {
     if (showSectorDetails && sectorMmoInfo?.sectorNumber) {
@@ -180,11 +211,82 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
   const activePlayersList = Object.values(allPlayers) as PlayerState[];
   const humanCount = activePlayersList.filter((p) => !p.isBot).length;
 
+  const isTeleportActive = Boolean(teleportAlert && Date.now() - teleportAlert.timestamp < 6500);
+  const isForeignIntruder = Boolean(isTeleportActive && teleportAlert && !teleportAlert.isResident);
+  const isResidentTeleport = Boolean(isTeleportActive && teleportAlert && teleportAlert.isResident);
+
+  const activeBountyTargets = React.useMemo(() => {
+    return (Object.values(allPlayers) as PlayerState[]).filter(
+      (p) => p.isAlive && p.hasBounty && (p.bountyReward || 0) > 0
+    );
+  }, [allPlayers]);
+
   return (
     <div
       id="tactical-hud-container"
-      className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between select-none font-sans"
+      className={`pointer-events-none absolute inset-0 z-20 flex flex-col justify-between select-none font-sans transition-all duration-300 ${
+        isForeignIntruder
+          ? 'dashboard-intruder-active border-4 border-rose-500 shadow-[inset_0_0_120px_rgba(244,63,94,0.85)]'
+          : isResidentTeleport
+          ? 'dashboard-resident-active border-4 border-sky-400 shadow-[inset_0_0_90px_rgba(56,189,248,0.7)]'
+          : ''
+      }`}
     >
+      {/* SECTOR 8 TELEPORT / FOREIGN INTRUSION STROBE BANNER */}
+      {isTeleportActive && teleportAlert && (
+        <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none select-none">
+          <div
+            className={`w-full py-2.5 px-4 flex items-center justify-between text-xs font-mono font-black tracking-wider uppercase shadow-2xl border-b-2 ${
+              isForeignIntruder
+                ? 'bg-gradient-to-r from-red-700 via-rose-600 to-red-700 text-white border-yellow-400 animate-pulse shadow-[0_0_50px_rgba(239,68,68,0.95)]'
+                : 'bg-gradient-to-r from-sky-700 via-cyan-600 to-sky-700 text-white border-amber-400 shadow-[0_0_40px_rgba(56,189,248,0.85)]'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {isForeignIntruder ? (
+                <ShieldAlert className="w-5 h-5 text-yellow-300 animate-bounce shrink-0" />
+              ) : (
+                <Zap className="w-5 h-5 text-amber-300 animate-pulse fill-amber-300 shrink-0" />
+              )}
+              <span className="drop-shadow-md text-[11px] sm:text-xs">
+                {isForeignIntruder
+                  ? `🚨 [SECTOR 8 INTRUSION ALERT] FOREIGN OPERATIVE "${teleportAlert.playerName.toUpperCase()}" FROM SECTOR ${teleportAlert.homeSector} TELEPORTED INTO SECTOR 8! 🚨`
+                  : `⚡ [SECTOR 8 WARP] RESIDENT OPERATIVE "${teleportAlert.playerName.toUpperCase()}" TELEPORTED INTO SECTOR 8 (-1 CHARGE) ⚡`}
+              </span>
+            </div>
+            <div className="hidden md:flex items-center gap-2 text-[10px] bg-black/50 px-2.5 py-1 rounded border border-white/20">
+              <span className="text-amber-300 font-mono">UNFRIENDLY SCORES CRUCIBLE</span>
+              <span>● ACTIVE WARZONE</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTOR 8 IN-GAME LIVE NEWS TICKER: Moves across screen until bounty claimed or target leaves/defeated */}
+      {activeBountyTargets.length > 0 && (
+        <div className="fixed top-12 sm:top-14 left-0 right-0 z-30 pointer-events-none select-none bg-gradient-to-r from-red-950/95 via-black/95 to-red-950/95 border-y-2 border-amber-500 shadow-[0_0_30px_rgba(245,158,11,0.5)] py-1.5 overflow-hidden flex items-center">
+          <div className="flex items-center gap-2 px-3 py-0.5 bg-red-600 text-black font-black font-mono text-[10px] uppercase tracking-wider shrink-0 shadow-lg ml-2 rounded-l">
+            <Radio className="w-3.5 h-3.5 animate-pulse" />
+            <span>SECTOR 8 BREAKING NEWS</span>
+          </div>
+          <div className="overflow-hidden whitespace-nowrap flex-1">
+            <div className="animate-news-ticker font-mono text-xs font-bold text-amber-200 tracking-wide">
+              {activeBountyTargets.map((b, idx) => (
+                <span key={idx} className="mx-8 inline-flex items-center gap-2.5">
+                  <span className="text-red-400 font-black">● BREAKING NEWS WIRE:</span>
+                  <span className="text-white font-black uppercase">HIGH COMMAND BOUNTY TARGET IDENTIFIED IN SECTOR 8:</span>
+                  <span className="px-2 py-0.5 rounded bg-amber-500 text-black font-black tracking-wider">[{b.name.toUpperCase()}]</span>
+                  <span className="text-amber-300 font-black">REWARD: {b.bountyReward || 1000} GOLD</span>
+                  <span className="text-slate-300">• UNFRIENDLY SCORES CRUCIBLE • BROADCAST ACTIVE UNTIL TARGET IS CLAIMED OR EXPELLED •</span>
+                  <span className="text-red-400 font-bold">KILL ON SIGHT</span>
+                  <span className="text-amber-400">⚡</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Immersive UI Header */}
       <header className="relative z-20 flex justify-between items-start p-3 sm:p-5 pl-52 sm:pl-64 bg-gradient-to-b from-black/90 via-black/50 to-transparent">
         {/* Left Side: Operator Info & Squad Score */}
@@ -460,6 +562,22 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
               )}
             </div>
           )}
+
+          {/* Active Sector 8 Bounty Target Badge */}
+          {activeBountyPlayer && (
+            <div className="bg-gradient-to-r from-amber-950/95 via-yellow-950/95 to-amber-950/95 border border-amber-400/90 px-3 py-1 rounded flex items-center gap-2 backdrop-blur-md shadow-[0_0_20px_rgba(245,158,11,0.6)] animate-pulse">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-bounce" />
+              <div className="flex flex-col leading-tight">
+                <span className="text-[8px] uppercase tracking-wider text-amber-300 font-black">
+                  SECTOR 8 BOUNTY
+                </span>
+                <span className="text-[11px] font-mono font-black text-amber-100 flex items-center gap-1">
+                  <span>{activeBountyPlayer.name}</span>
+                  <span className="text-amber-400">({activeBountyPlayer.bountyReward}G)</span>
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right Side: Online Players / Roster, Shop, Latency, Audio Toggle */}
@@ -561,6 +679,53 @@ export const TacticalHUD: React.FC<TacticalHUDProps> = ({
           )}
         </div>
       </header>
+
+      {/* Sector 8 High Command Bounty Alert Screen Banner */}
+      {bountyAlert && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none max-w-lg w-full px-4 animate-in slide-in-from-top-4 duration-300">
+          <div className="bg-gradient-to-r from-amber-950/95 via-yellow-950/95 to-amber-950/95 border-2 border-amber-500 rounded-xl p-4 shadow-[0_0_40px_rgba(245,158,11,0.65)] backdrop-blur-md text-white text-center">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <AlertTriangle className="w-5 h-5 text-amber-400 animate-bounce" />
+              <span className="text-[11px] font-mono font-black tracking-widest uppercase text-amber-400">
+                SECTOR 8 HIGH COMMAND BOUNTY BROADCAST
+              </span>
+              <AlertTriangle className="w-5 h-5 text-amber-400 animate-bounce" />
+            </div>
+            <div className="text-xl sm:text-2xl font-black font-mono uppercase tracking-wide text-white drop-shadow-md">
+              TARGET FLAGGED: {bountyAlert.targetName}
+            </div>
+            <div className="mt-1 flex items-center justify-center gap-3">
+              <span className="px-2.5 py-0.5 rounded bg-amber-500 text-black font-mono font-black text-xs">
+                💰 PRIZE: {bountyAlert.rewardGold.toLocaleString()} GOLD
+              </span>
+              <span className="text-xs font-mono text-amber-200">
+                {bountyAlert.reason || 'Eliminate target to claim bounty'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sector 8 Bounty Claimed Screen Banner */}
+      {bountyClaimed && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none select-none max-w-lg w-full px-4 animate-in slide-in-from-top-4 duration-300">
+          <div className="bg-gradient-to-r from-emerald-950/95 via-teal-950/95 to-emerald-950/95 border-2 border-emerald-400 rounded-xl p-4 shadow-[0_0_40px_rgba(16,185,129,0.65)] backdrop-blur-md text-white text-center">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <Trophy className="w-5 h-5 text-amber-400 animate-pulse" />
+              <span className="text-[11px] font-mono font-black tracking-widest uppercase text-emerald-400">
+                SECTOR 8 BOUNTY CLAIMED!
+              </span>
+              <Trophy className="w-5 h-5 text-amber-400 animate-pulse" />
+            </div>
+            <div className="text-lg sm:text-xl font-black font-mono uppercase tracking-wide text-white">
+              {bountyClaimed.killerName} ELIMINATED {bountyClaimed.victimName}
+            </div>
+            <div className="mt-1 text-xs font-mono text-emerald-200 font-bold">
+              +{bountyClaimed.rewardGold.toLocaleString()} GOLD DEPOSITED TO KILLER'S MMO ACCOUNT
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Spectator Mode Floating Control Bar */}
       {isSpectator && (

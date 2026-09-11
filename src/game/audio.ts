@@ -485,6 +485,139 @@ class SoundManager {
       });
     }
   }
+
+  // Audio cue when a bounty target appears in Sector 8
+  public playBountyAlert() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
+
+    const t = this.ctx.currentTime;
+    // Two rapid alarm siren pulses
+    [0, 0.22, 0.44].forEach((offset) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(587.33, t + offset); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, t + offset + 0.16); // A5
+      gain.gain.setValueAtTime(0.45, t + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + offset + 0.2);
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t + offset);
+      osc.stop(t + offset + 0.2);
+    });
+  }
+
+  // Audio cue when a bounty is successfully claimed
+  public playBountyClaimed() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
+
+    const t = this.ctx.currentTime;
+    // Triumphant golden fanfare + gold coin chimes
+    const chord = [523.25, 659.25, 783.99, 1046.5]; // C Major arpeggio up to high C
+    chord.forEach((freq, idx) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t + idx * 0.1);
+      gain.gain.setValueAtTime(0.5, t + idx * 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.1 + 0.6);
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t + idx * 0.1);
+      osc.stop(t + idx * 0.1 + 0.6);
+    });
+  }
+
+  // Audio cue when a commander teleports to Sector 8
+  public playTeleport() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
+
+    const t = this.ctx.currentTime;
+    // Sci-fi warp vortex: rising sine pitch sweep + filtered resonance burst
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(1400, t + 0.55);
+
+    gain.gain.setValueAtTime(0.01, t);
+    gain.gain.linearRampToValueAtTime(0.5, t + 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.7);
+
+    // Deep sub bass pulse at arrival
+    const sub = this.ctx.createOscillator();
+    const subGain = this.ctx.createGain();
+    sub.type = 'triangle';
+    sub.frequency.setValueAtTime(160, t + 0.35);
+    sub.frequency.exponentialRampToValueAtTime(35, t + 0.75);
+
+    subGain.gain.setValueAtTime(0.6, t + 0.35);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.85);
+
+    sub.connect(subGain);
+    subGain.connect(this.masterGain);
+    sub.start(t + 0.35);
+    sub.stop(t + 0.85);
+  }
+
+  // Hostile intruder alert when non-resident warps into Sector 8
+  public playIntruderAlert() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
+
+    const t = this.ctx.currentTime;
+    // Red alert klaxon dual tone
+    [0, 0.3, 0.6].forEach((offset) => {
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(440, t + offset);
+      osc.frequency.exponentialRampToValueAtTime(330, t + offset + 0.22);
+
+      gain.gain.setValueAtTime(0.55, t + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + offset + 0.26);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t + offset);
+      osc.stop(t + offset + 0.26);
+    });
+  }
+
+  // Player death / elimination sound
+  public playDeath() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
+
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(260, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.45);
+
+    gain.gain.setValueAtTime(0.5, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t);
+    osc.stop(t + 0.5);
+  }
 }
 
 export const sounds = new SoundManager();

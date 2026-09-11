@@ -50,6 +50,24 @@ export function hasLineOfSight(x1: number, y1: number, x2: number, y2: number, w
   return true;
 }
 
+// Fast spatial filter to prune walls outside candidate radius
+export function filterWallsNear(ox: number, oy: number, maxDist: number, walls: Wall[]): Wall[] {
+  const maxDistWithMargin = maxDist + 150;
+  const maxDistSq = maxDistWithMargin * maxDistWithMargin;
+  const filtered: Wall[] = [];
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i];
+    const cx = w.x + w.width * 0.5;
+    const cy = w.y + w.height * 0.5;
+    const dx = cx - ox;
+    const dy = cy - oy;
+    if (dx * dx + dy * dy <= maxDistSq) {
+      filtered.push(w);
+    }
+  }
+  return filtered;
+}
+
 // Find closest intersection of ray from (ox, oy) in direction (dx, dy) up to maxDist
 export function castRay(ox: number, oy: number, angle: number, maxDist: number, walls: Wall[]): { x: number; y: number; dist: number } {
   const targetX = ox + Math.cos(angle) * maxDist;

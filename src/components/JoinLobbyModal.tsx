@@ -37,6 +37,9 @@ interface JoinLobbyModalProps {
   equippedEffectId: EffectId;
   playerCoins: number;
   turretCount: number;
+  teleportCharges?: number;
+  bountyTimeoutSeconds?: number;
+  onRechargeTeleport?: () => void;
   onOpenShop: () => void;
   onOpenSettings?: () => void;
   onJoin: (
@@ -46,7 +49,9 @@ interface JoinLobbyModalProps {
     gameMode: GameMode,
     team?: TeamId,
     enableBots?: boolean,
-    isSpectator?: boolean
+    isSpectator?: boolean,
+    homeSector?: number,
+    isTeleport?: boolean
   ) => void;
 }
 
@@ -58,14 +63,19 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
   equippedEffectId,
   playerCoins,
   turretCount,
+  teleportCharges = 5,
+  bountyTimeoutSeconds = 0,
+  onRechargeTeleport,
   onOpenShop,
   onOpenSettings,
   onJoin,
 }) => {
   const [name] = useState(initialName || `Agent-${Math.floor(Math.random() * 900 + 100)}`);
-  const [roomId, setRoomId] = useState(initialRoomId || '');
-  const [gameMode, setGameMode] = useState<GameMode>('ffa');
+  const [roomId, setRoomId] = useState(initialRoomId || 'sector-8');
+  const [gameMode, setGameMode] = useState<GameMode>('tdm');
   const [selectedTeam, setSelectedTeam] = useState<TeamId | 'auto'>('auto');
+  const [homeSector, setHomeSector] = useState<number>(8);
+  const [isForeignSector, setIsForeignSector] = useState<boolean>(false);
   const isTraining = gameMode === 'training';
   const [heroId, setHeroId] = useState<HeroId>(() => {
     if (initialHeroId === 'bastion') return 'marksman';
@@ -90,16 +100,23 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
 
   const handleJoinGame = (isSpectator: boolean = false) => {
     if (!name.trim()) return;
+    if (bountyTimeoutSeconds > 0 && !isSpectator) return;
     requestLandscapeMode().catch(() => {});
     const teamParam = selectedTeam === 'auto' ? undefined : selectedTeam;
+    const targetRoom = roomId.trim().toLowerCase() || 'sector-8';
+    const isSector8 = targetRoom === 'sector-8' || targetRoom.includes('sector-8');
+    const actualHomeSector = isForeignSector ? (homeSector === 8 ? 3 : homeSector) : 8;
+
     onJoin(
       name.trim(),
-      roomId.trim().toLowerCase() || 'auto',
+      targetRoom,
       heroId,
       gameMode,
       teamParam,
       isTraining,
-      isSpectator
+      isSpectator,
+      actualHomeSector,
+      isSector8 && !isSpectator
     );
   };
 
@@ -302,9 +319,23 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
             <div>
               <div className="flex justify-between items-center mb-1.5">
                 <label className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">
-                  Server Sector / Room ID
+                  Sector Destination / Warzone ID
                 </label>
-                <span className="text-[10px] text-sky-400 font-mono font-bold">10 Players Max / Server</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-amber-400 font-mono font-bold flex items-center gap-1">
+                    <Zap className="w-3 h-3 fill-amber-400 text-amber-400" />
+                    <span>Charges: {teleportCharges}/10</span>
+                  </span>
+                  {onRechargeTeleport && (
+                    <button
+                      type="button"
+                      onClick={onRechargeTeleport}
+                      className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-mono hover:bg-amber-500 hover:text-black transition-colors cursor-pointer"
+                    >
+                      + Recharge
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="relative">
                 <input
@@ -312,37 +343,82 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value)}
                   maxLength={24}
-                  placeholder="e.g. sector-8, sector-1, or leave empty"
+                  placeholder="sector-8"
                   className="w-full bg-[#060609] border border-slate-700 focus:border-amber-400 rounded-lg px-3.5 py-2.5 text-white text-sm font-mono focus:outline-none focus:ring-1 focus:ring-amber-400 shadow-inner"
                 />
                 <Globe className="w-4 h-4 text-slate-500 absolute right-3 top-3" />
               </div>
 
-              {/* Quick Sector Presets */}
+              {/* Strict Sector 8 Preset */}
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                <span className="text-[9px] font-mono text-slate-500 uppercase">MMO SECTORS:</span>
-                {[
-                  { id: 'sector-8', label: 'Sector 8 (Frontline)', mode: 'tdm' as GameMode },
-                  { id: 'sector-1', label: 'Sector 1 (Citadel)', mode: 'ffa' as GameMode },
-                  { id: 'sector-4', label: 'Sector 4 (Foundry)', mode: 'ffa' as GameMode },
-                  { id: 'sector-12', label: 'Sector 12 (Deep Rim)', mode: 'br' as GameMode },
-                ].map((s) => (
+                <span className="text-[9px] font-mono text-amber-400 uppercase font-bold">ACTIVE SECTOR:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRoomId('sector-8');
+                    setGameMode('tdm');
+                  }}
+                  className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    roomId === 'sector-8' || !roomId
+                      ? 'bg-amber-500 text-black border border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                      : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700'
+                  }`}
+                >
+                  <Zap className="w-3 h-3 fill-current" />
+                  <span>Sector 8 (Unfriendly Scores Crucible)</span>
+                </button>
+              </div>
+
+              {/* Commander Origin / Home Sector Choice */}
+              <div className="mt-2.5 pt-2.5 border-t border-slate-800/80">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-mono uppercase font-bold text-slate-400 flex items-center gap-1">
+                    <Shield className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Commander Origin:</span>
+                  </span>
+                  <span className="text-[9px] font-mono text-slate-500">
+                    {isForeignSector ? `Foreign Operative (Sector ${homeSector})` : 'Resident of Sector 8'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
                   <button
-                    key={s.id}
                     type="button"
                     onClick={() => {
-                      setRoomId(s.id);
-                      setGameMode(s.mode);
+                      setIsForeignSector(false);
+                      setHomeSector(8);
                     }}
-                    className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
-                      roomId === s.id
-                        ? 'bg-amber-500 text-black border border-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.3)]'
-                        : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700'
+                    className={`p-2 rounded border text-left text-xs font-mono transition-all cursor-pointer ${
+                      !isForeignSector
+                        ? 'bg-sky-950/80 border-sky-400 text-sky-200 ring-1 ring-sky-400/40'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-300'
                     }`}
                   >
-                    {s.label}
+                    <div className="font-bold flex items-center gap-1">
+                      <span>Resident of Sector 8</span>
+                      {!isForeignSector && <span className="text-sky-400">●</span>}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">Native garrison operative</div>
                   </button>
-                ))}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsForeignSector(true);
+                      setHomeSector(3);
+                    }}
+                    className={`p-2 rounded border text-left text-xs font-mono transition-all cursor-pointer ${
+                      isForeignSector
+                        ? 'bg-rose-950/80 border-rose-500 text-rose-200 ring-1 ring-rose-400/40'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-300'
+                    }`}
+                  >
+                    <div className="font-bold flex items-center gap-1">
+                      <span>Foreign Sector Intruder</span>
+                      {isForeignSector && <span className="text-rose-400">●</span>}
+                    </div>
+                    <div className="text-[10px] text-rose-300/80 mt-0.5">Lights up entire dashboard!</div>
+                  </button>
+                </div>
               </div>
 
               {/* Dynamic Sector MMO Context Intel */}
@@ -631,13 +707,38 @@ export const JoinLobbyModal: React.FC<JoinLobbyModalProps> = ({
             </div>
           </div>
 
-          {/* Action Buttons: Deploy Combatant vs Spectate Match */}
+          {/* Lockout Warning Banner if player has active bounty defeat timeout */}
+          {bountyTimeoutSeconds > 0 && (
+            <div className="p-3 bg-rose-950/90 border border-rose-500 rounded-xl text-center font-mono shadow-[0_0_20px_rgba(244,63,94,0.3)] animate-pulse">
+              <div className="text-rose-400 font-bold text-xs flex items-center justify-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <span>SECTOR 8 WARZONE LOCKOUT ACTIVE</span>
+              </div>
+              <p className="text-white text-xs mt-1">
+                You were eliminated as a high-value bounty target. Clearance suspended for{' '}
+                <span className="text-amber-400 font-black text-sm">{bountyTimeoutSeconds}s</span>.
+              </p>
+              <div className="text-[10px] text-rose-300/80 mt-0.5">
+                Redeployment to Sector 8 crucible is currently prohibited.
+              </div>
+            </div>
+          )}
+
+          {/* Action Buttons: Teleport / Deploy Combatant vs Spectate Match */}
           <div className="flex flex-col sm:flex-row gap-2.5 mt-2">
             <button
               type="submit"
-              className="flex-1 py-3.5 bg-amber-500 hover:bg-amber-400 border border-amber-400 text-black font-black tracking-wider text-sm rounded-xl shadow-[0_0_25px_rgba(245,158,11,0.35)] transition-all transform active:scale-98 cursor-pointer flex items-center justify-center gap-2"
+              disabled={bountyTimeoutSeconds > 0}
+              className={`flex-1 py-3.5 border text-black font-black tracking-wider text-sm rounded-xl transition-all transform active:scale-98 flex items-center justify-center gap-2 ${
+                bountyTimeoutSeconds > 0
+                  ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed opacity-60'
+                  : 'bg-amber-500 hover:bg-amber-400 border-amber-400 shadow-[0_0_25px_rgba(245,158,11,0.35)] cursor-pointer'
+              }`}
             >
-              <span>DEPLOY {selectedHero.name.toUpperCase()}</span>
+              <Zap className="w-4 h-4 fill-black" />
+              <span>
+                TELEPORT TO SECTOR 8 (-1 CHARGE) • {selectedHero.name.toUpperCase()}
+              </span>
               <ArrowRight className="w-4 h-4" />
             </button>
 

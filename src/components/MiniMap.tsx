@@ -187,8 +187,8 @@ export const MiniMap: React.FC<MiniMapProps> = ({
         // Enemies are visible if:
         // 1. Valkyrie scan active (radarActive)
         // 2. Close scan proximity (within 600px of player)
-        // 3. Actively shooting (revealed on acoustic radar)
-        let isEnemyVisible = radarActive || other.isShooting;
+        // 3. Actively shooting (revealed on acoustic radar) or has active bounty (flagged to sector!)
+        let isEnemyVisible = radarActive || other.isShooting || !!other.hasBounty;
         if (player && !isEnemyVisible) {
           const dist = Math.hypot(other.x - player.x, other.y - player.y);
           if (dist < 650) {
@@ -205,11 +205,38 @@ export const MiniMap: React.FC<MiniMapProps> = ({
         if (px < 4 || px > size - 4 || py < 4 || py > size - 4) continue;
 
         ctx.save();
-        if (isTeammate) {
+        if (other.hasBounty) {
+          // HIGH-VALUE BOUNTY TARGET BLIP (Flashing Gold Skull / Crown)
+          const pulse = Math.sin(now * 0.012) * 0.3 + 0.8;
+          // Outer halo ring
+          ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(px, py, 9 * pulse, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = '#f59e0b';
+          ctx.beginPath();
+          ctx.arc(px, py, 5.5 * pulse, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Golden target ring
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(px, py, 8.5 * pulse, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Heading line
+          ctx.strokeStyle = '#fef08a';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.cos(other.angle) * 8, py + Math.sin(other.angle) * 8);
+          ctx.stroke();
+        } else if (isTeammate) {
           // Teammate: Friendly Emerald/Cyan Blip
           ctx.fillStyle = '#4ade80';
-          ctx.shadowColor = '#22c55e';
-          ctx.shadowBlur = 6;
           ctx.beginPath();
           ctx.arc(px, py, 4, 0, Math.PI * 2);
           ctx.fill();
@@ -225,8 +252,6 @@ export const MiniMap: React.FC<MiniMapProps> = ({
           // Enemy: Pulsing Crimson Threat Blip
           const pulse = Math.sin(now * 0.01 + other.x) * 0.2 + 0.8;
           ctx.fillStyle = other.isShooting ? '#f59e0b' : '#ef4444';
-          ctx.shadowColor = '#dc2626';
-          ctx.shadowBlur = 8;
           ctx.beginPath();
           ctx.arc(px, py, 4 * pulse, 0, Math.PI * 2);
           ctx.fill();
@@ -268,11 +293,12 @@ export const MiniMap: React.FC<MiniMapProps> = ({
 
         // Local Player Core Blip
         ctx.fillStyle = '#ffffff';
-        ctx.shadowColor = '#38bdf8';
-        ctx.shadowBlur = 8;
         ctx.beginPath();
         ctx.arc(px, py, 4.5, 0, Math.PI * 2);
         ctx.fill();
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
 
         // Outer pulse ring
         const ringPulse = (now % 1000) / 1000;

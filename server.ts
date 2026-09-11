@@ -47,6 +47,16 @@ import {
   getMmoSectorLiveState,
   syncMmoBattleOutcome,
   getMmoBounties,
+  SECTOR8_SQL_MIGRATION,
+  getSector8Leaderboard,
+  recordSector8MatchScore,
+  checkPlayerBounty,
+  claimMmoBounty,
+  isBotPlayer,
+  deductTeleportCharge,
+  rechargeTeleportCharges,
+  setBountyTimeout,
+  isPlayerTimedOut,
 } from './server/db';
 
 const app = express();
@@ -98,6 +108,10 @@ app.post('/api/player/tokens', async (req, res) => {
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
+    if (req.query.sector === '8' || req.query.sectorId === '8') {
+      const leaderboard = await getSector8Leaderboard();
+      return res.json({ leaderboard, sector: 8 });
+    }
     const leaderboard = await getLeaderboard();
     res.json({ leaderboard });
   } catch (err: any) {
@@ -105,8 +119,33 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
+app.get('/api/sector8/leaderboard', async (req, res) => {
+  try {
+    const leaderboard = await getSector8Leaderboard();
+    res.json({ leaderboard, sector: 8 });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/sector8/migration', (req, res) => {
+  res.type('text/plain').send(SECTOR8_SQL_MIGRATION);
+});
+
 app.post('/api/leaderboard/submit', async (req, res) => {
   try {
+    const { name, isBot, score, sectorNumber, sectorId } = req.body;
+    // CRITICAL: Bots are never present on the leaderboard!
+    if (isBotPlayer(name, isBot) || (score && score <= 0)) {
+      return res.json({ success: true, ignored: true, reason: 'Bots are strictly excluded from leaderboards' });
+    }
+
+    if (sectorNumber === 8 || sectorNumber === '8' || sectorId === 8 || sectorId === '8') {
+      await recordSector8MatchScore(req.body);
+      const leaderboard = await getSector8Leaderboard();
+      return res.json({ success: true, leaderboard, sector: 8 });
+    }
+
     const leaderboard = await recordMatchScore(req.body);
     res.json({ success: true, leaderboard });
   } catch (err: any) {
@@ -143,12 +182,70 @@ app.get('/api/mmo/bounties', async (req, res) => {
   }
 });
 
+// Teleport authorization & charge deduction endpoint for Sector 8
+app.post('/api/teleport/sector-8', async (req, res) => {
+  try {
+    const { callsign } = req.body;
+    if (!callsign) {
+      return res.status(400).json({ success: false, error: 'Callsign required' });
+    }
+
+    // Check if player is timed out from bounty elimination
+    const timeoutStatus = await isPlayerTimedOut(callsign);
+    if (timeoutStatus.isTimedOut) {
+      return res.json({
+        success: false,
+        isTimedOut: true,
+        secondsRemaining: timeoutStatus.secondsRemaining,
+        error: `SECTOR 8 LOCKOUT ACTIVE: You were eliminated as a bounty target. High Command has suspended your deployment for another ${timeoutStatus.secondsRemaining}s.`,
+      });
+    }
+
+    // Deduct 1 teleport charge
+    const chargeResult = await deductTeleportCharge(callsign);
+    if (!chargeResult.success) {
+      return res.json({
+        success: false,
+        chargesRemaining: chargeResult.chargesRemaining,
+        error: chargeResult.error || 'No teleport charges remaining. Replenish charges to warp.',
+      });
+    }
+
+    res.json({
+      success: true,
+      chargesRemaining: chargeResult.chargesRemaining,
+      message: 'Teleport authorization granted. Warping into Sector 8 Outpost Crucible.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Recharge teleport charges endpoint
+app.post('/api/teleport/recharge', async (req, res) => {
+  try {
+    const { callsign, amount } = req.body;
+    if (!callsign) return res.status(400).json({ error: 'Callsign required' });
+    const newCharges = await rechargeTeleportCharges(callsign, amount || 5);
+    res.json({ success: true, chargesRemaining: newCharges });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Query timeout status for player
+app.get('/api/player/timeout/:callsign', async (req, res) => {
+  try {
+    const status = await isPlayerTimedOut(req.params.callsign);
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/rooms', (req, res) => {
   const sectorNames: Record<string, string> = {
-    'sector-8': 'SECTOR 8 // OUTPOST CRUCIBLE (MMO Contested Frontline)',
-    'sector-1': 'SECTOR 1 // PRIME CITADEL GARRISON (MMO Base)',
-    'sector-4': 'SECTOR 4 // INDUSTRIAL FOUNDRY COMPLEX (MMO Base)',
-    'sector-12': 'SECTOR 12 // DEEP RIM EXCAVATION (MMO Base)',
+    'sector-8': 'SECTOR 8 // OUTPOST CRUCIBLE (UNFRIENDLY SCORES WARZONE)',
     'ffa-public': 'SECTOR ALPHA (FFA)',
     'tdm-public': 'SECTOR BRAVO (TDM)',
     'br-public': 'SECTOR CHARLIE (BR)',
@@ -284,7 +381,9 @@ class GameRoom {
     preferredTeam?: TeamId,
     weaponId?: WeaponId,
     effectId?: EffectId,
-    turretCount?: number
+    turretCount?: number,
+    homeSector?: number,
+    isTeleport?: boolean
   ) {
     this.sockets.set(id, ws);
     const spawn = this.getRandomSpawn();
@@ -368,10 +467,45 @@ class GameRoom {
       isUsingPistol: false,
       primaryAmmo: playerMaxAmmo,
       maxPrimaryAmmo: playerMaxAmmo,
+      homeSector: homeSector ?? 8,
     };
 
     this.players[id] = player;
     this.adjustBots({ id, name, team: player.team });
+
+    // Announce teleport arrival across Sector 8 dashboard
+    const currentSectorNum = this.sectorMmoInfo?.sectorNumber ? parseInt(this.sectorMmoInfo.sectorNumber, 10) : 8;
+    const isResident = (homeSector === 8 || homeSector === undefined);
+    this.broadcastMessage({
+      type: 'teleport_arrival',
+      playerName: player.name,
+      playerId: id,
+      isResident,
+      homeSector: homeSector ?? 8,
+      timestamp: Date.now(),
+    });
+
+    // Check if commander entering Sector 8 has an active open bounty
+    checkPlayerBounty(player.name, currentSectorNum).then((bounty) => {
+      if (bounty && this.players[id]) {
+        this.players[id].hasBounty = true;
+        this.players[id].bountyReward = bounty.rewardGold;
+        this.players[id].bountyId = bounty.bountyId;
+        this.players[id].bountyReason = bounty.reason;
+
+        console.log(`[Bounty Alert] Commander ${player.name} flagged with ${bounty.rewardGold} Gold bounty in Sector ${currentSectorNum}!`);
+
+        // Immediately flag them to the members of sector 8
+        this.broadcastMessage({
+          type: 'bounty_alert',
+          targetName: player.name,
+          targetId: id,
+          rewardGold: bounty.rewardGold,
+          reason: bounty.reason,
+          sectorNumber: currentSectorNum,
+        });
+      }
+    }).catch(() => {});
 
     // When the very first human player enters an empty arena, position a few bots nearby for immediate action
     const humanCount = this.getHumanPlayerCount();
@@ -1787,6 +1921,69 @@ class GameRoom {
       // Broadcast kill message
       this.broadcastMessage({ type: 'kill', kill: killEvent });
 
+      // Bounty Claim Resolution: If victim had a bounty placed on them
+      if (victim.hasBounty && victim.bountyReward && victim.bountyReward > 0) {
+        const bountyGold = victim.bountyReward;
+        const bountyId = victim.bountyId;
+        const targetName = victim.name;
+        const killerName = attacker?.name || 'Hazard';
+        const killerId = attacker?.id || 'unknown';
+        const isKillerBot = isBotPlayer(killerName, attacker?.isBot);
+        const sectorNum = this.sectorMmoInfo?.sectorNumber ? parseInt(this.sectorMmoInfo.sectorNumber, 10) : 8;
+
+        console.log(`[Bounty Claimed!] ${killerName} eliminated bounty target ${targetName} in Sector ${sectorNum}! Prize: ${bountyGold} Gold.`);
+
+        // Award in-game score to killer immediately
+        if (attacker) {
+          attacker.score += bountyGold;
+        }
+
+        // Broadcast bounty claimed announcement across sector
+        this.broadcastMessage({
+          type: 'bounty_claimed',
+          killerName,
+          killerId,
+          victimName: targetName,
+          victimId: victim.id,
+          rewardGold: bountyGold,
+          sectorNumber: sectorNum,
+        });
+
+        // Resolve bounty in Supabase / MMO database
+        claimMmoBounty({
+          bountyId,
+          targetName,
+          killerName,
+          rewardGold: bountyGold,
+          isKillerBot,
+        }).catch((err) => {
+          console.warn('[Bounty Claim Resolution Error]', err);
+        });
+
+        // Sector 8 Bounty Defeat Penalty: Automatic timeout from deploying into Sector 8
+        const timeoutSeconds = 60;
+        victim.isTimedOut = true;
+        victim.timeoutUntil = Date.now() + timeoutSeconds * 1000;
+        victim.respawnAt = victim.timeoutUntil;
+
+        // Persist timeout in DB
+        setBountyTimeout(targetName, timeoutSeconds).catch((e) => console.warn('[Bounty Timeout Error]', e));
+
+        // Broadcast timeout lockout across sector and to the victim
+        this.broadcastMessage({
+          type: 'bounty_timeout',
+          targetName,
+          timeoutSeconds,
+          reason: `High Command has suspended Sector 8 deployment clearance for ${targetName} following bounty elimination by ${killerName}.`,
+        });
+
+        // Clear bounty from victim
+        victim.hasBounty = false;
+        victim.bountyReward = 0;
+        victim.bountyId = undefined;
+        victim.bountyReason = undefined;
+      }
+
       // Check Win Conditions
       if (this.gameMode === 'tdm') {
         if (this.teamScores.alpha >= 100) {
@@ -2040,21 +2237,37 @@ class GameRoom {
       );
 
       // Persist player tokens and tournament score to durable storage & Supabase
-      if (!p.isBot) {
+      // CRITICAL: Bots are never present on the leaderboard!
+      if (!isBotPlayer(p.name, p.isBot)) {
         updatePlayerTokens(p.name, totalCoins).catch(() => {});
-        recordMatchScore({
-          name: p.name,
-          score: p.score,
-          kills: p.kills,
-          deaths: p.deaths,
-          wins: isWinner ? 1 : 0,
-          heroId: p.heroId,
-        }).catch(() => {});
+
+        // Sector 8 matches record exclusively to the dedicated sector 8 leaderboard group
+        const sectorNum = this.sectorMmoInfo?.sectorNumber ? parseInt(this.sectorMmoInfo.sectorNumber, 10) : 8;
+        if (sectorNum === 8 || this.id.includes('sector-8') || this.id.includes('sector8')) {
+          recordSector8MatchScore({
+            name: p.name,
+            score: p.score,
+            kills: p.kills,
+            deaths: p.deaths,
+            wins: isWinner ? 1 : 0,
+            heroId: p.heroId,
+            isBot: false,
+          }).catch(() => {});
+        } else {
+          recordMatchScore({
+            name: p.name,
+            score: p.score,
+            kills: p.kills,
+            deaths: p.deaths,
+            wins: isWinner ? 1 : 0,
+            heroId: p.heroId,
+          }).catch(() => {});
+        }
 
         // Synchronize with persistent text MMO base & sector tables
         syncMmoBattleOutcome({
           roomId: this.id,
-          sectorNumber: this.sectorMmoInfo?.sectorNumber,
+          sectorNumber: this.sectorMmoInfo?.sectorNumber || '8',
           playerName: p.name,
           score: p.score,
           kills: p.kills,
@@ -2397,11 +2610,8 @@ findOrCreateServerForMode('tdm');
 findOrCreateServerForMode('br');
 findOrCreateServerForMode('training');
 
-// Pre-initialize persistent MMO Base Building Sector Shards
-getOrCreateRoom('sector-8', 'tdm'); // Sector 8 Outpost Crucible (Frontline Contested)
-getOrCreateRoom('sector-1', 'ffa'); // Sector 1 Prime Citadel Garrison
-getOrCreateRoom('sector-4', 'ffa'); // Sector 4 Industrial Foundry Complex
-getOrCreateRoom('sector-12', 'br'); // Sector 12 Deep Rim Excavation
+// Pre-initialize persistent MMO Sector 8 Combat Warzone
+getOrCreateRoom('sector-8', 'tdm'); // Sector 8 Outpost Crucible (Unfriendly Scores Combat Zone)
 
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
@@ -2429,32 +2639,75 @@ wss.on('connection', (ws) => {
       if (data.type === 'join') {
         const reqMode = data.gameMode || 'ffa';
         const wantsSpectate = Boolean(data.isSpectator);
-        const { room, wasFull } = getOrCreateRoom(
-          data.roomId,
-          reqMode,
-          reqMode === 'training',
-          wantsSpectate
-        );
-        currentRoom = room;
+        const isSector8 = (data.roomId === 'sector-8' || !data.roomId || data.roomId.startsWith('sector-8'));
 
-        const actualSpectate = wantsSpectate || wasFull;
-        if (actualSpectate) {
-          isSpectatingClient = true;
-          playerId = `spec-${Math.random().toString(36).substr(2, 8)}`;
-          currentRoom.addSpectator(ws, playerId, data.name || 'Spectator');
-        } else {
-          isSpectatingClient = false;
-          playerId = `p-${Math.random().toString(36).substr(2, 8)}`;
-          currentRoom.addPlayer(
-            ws,
-            playerId,
-            data.name,
-            data.heroId,
-            data.team,
-            data.weaponId,
-            data.effectId,
-            data.turretCount
+        const proceedWithJoin = () => {
+          const { room, wasFull } = getOrCreateRoom(
+            data.roomId,
+            reqMode,
+            reqMode === 'training',
+            wantsSpectate
           );
+          currentRoom = room;
+
+          const actualSpectate = wantsSpectate || wasFull;
+          if (actualSpectate) {
+            isSpectatingClient = true;
+            playerId = `spec-${Math.random().toString(36).substr(2, 8)}`;
+            currentRoom.addSpectator(ws, playerId, data.name || 'Spectator');
+          } else {
+            isSpectatingClient = false;
+            playerId = `p-${Math.random().toString(36).substr(2, 8)}`;
+            currentRoom.addPlayer(
+              ws,
+              playerId,
+              data.name,
+              data.heroId,
+              data.team,
+              data.weaponId,
+              data.effectId,
+              data.turretCount,
+              data.homeSector,
+              data.isTeleport
+            );
+          }
+        };
+
+        if (isSector8 && !wantsSpectate) {
+          isPlayerTimedOut(data.name).then((tStatus) => {
+            if (tStatus.isTimedOut) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'bounty_timeout',
+                  targetName: data.name,
+                  timeoutSeconds: tStatus.secondsRemaining,
+                  reason: `SECTOR 8 DEPLOYMENT LOCKOUT: You were eliminated as a bounty target. Clearance suspended for ${tStatus.secondsRemaining}s.`
+                }));
+              }
+              return;
+            }
+
+            if (data.isTeleport) {
+              deductTeleportCharge(data.name).then((cRes) => {
+                if (!cRes.success) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'bounty_timeout',
+                      targetName: data.name,
+                      timeoutSeconds: 0,
+                      reason: cRes.error || 'No teleport charges remaining. Replenish charges to warp to Sector 8.'
+                    }));
+                  }
+                  return;
+                }
+                proceedWithJoin();
+              }).catch(() => proceedWithJoin());
+            } else {
+              proceedWithJoin();
+            }
+          }).catch(() => proceedWithJoin());
+        } else {
+          proceedWithJoin();
         }
       } else if (data.type === 'toggle_bots' && currentRoom) {
         // Players should NOT be able to activate bots during the game.
@@ -2514,23 +2767,34 @@ wss.on('connection', (ws) => {
 
 // Vite & Static Asset Handling
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  try {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
+  } catch (err) {
+    console.error('Failed to initialize Vite middleware:', err);
   }
 
+  server.on('error', (err: any) => {
+    console.error('[Server Error]:', err);
+  });
+
   server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Omega Killzone Zero Tactical Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[Fatal Server Startup Error]:', err);
+});

@@ -1,6 +1,6 @@
 import { PlayerState, Wall, Bush, Pickup, SoundEcho, Bullet, HeroId, Turret, SafeZone, ActiveGrenade } from '../types/game';
 import { HERO_DEFINITIONS, MAP_CONFIG } from './constants';
-import { castRay, hasLineOfSight } from './raycast';
+import { castRay, hasLineOfSight, filterWallsNear } from './raycast';
 
 export interface FloatingText {
   id: string;
@@ -44,6 +44,7 @@ export class CanvasRenderer {
   private cameraY: number = 0;
   private hasInitializedCamera: boolean = false;
   private playerPrevPos: Map<string, { x: number; y: number; lastMove: number }> = new Map();
+  private interpPlayers: Map<string, { x: number; y: number; angle: number }> = new Map();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -179,6 +180,33 @@ export class CanvasRenderer {
 
     ctx.clearRect(0, 0, width, height);
 
+    // Update smooth player interpolation to eliminate 25Hz stepping jitter
+    for (const pId in players) {
+      const p = players[pId];
+      let interp = this.interpPlayers.get(pId);
+      if (!interp) {
+        interp = { x: p.x, y: p.y, angle: p.angle };
+        this.interpPlayers.set(pId, interp);
+      } else {
+        const dist = Math.hypot(p.x - interp.x, p.y - interp.y);
+        if (dist > 300) {
+          interp.x = p.x;
+          interp.y = p.y;
+          interp.angle = p.angle;
+        } else {
+          interp.x += (p.x - interp.x) * 0.35;
+          interp.y += (p.y - interp.y) * 0.35;
+          let dAngle = p.angle - interp.angle;
+          while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+          while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+          interp.angle += dAngle * 0.4;
+        }
+      }
+    }
+    for (const id of this.interpPlayers.keys()) {
+      if (!players[id]) this.interpPlayers.delete(id);
+    }
+
     const localPlayer = players[localPlayerId];
     const isSpectating = !localPlayer || localPlayerId.startsWith('spec-');
 
@@ -188,6 +216,11 @@ export class CanvasRenderer {
       : (spectatedPlayerId && players[spectatedPlayerId]?.isAlive)
       ? players[spectatedPlayerId]
       : (localPlayer || Object.values(players).find((p) => p.isAlive) || null);
+
+    const targetInterp = targetPlayer ? this.interpPlayers.get(targetPlayer.id) : null;
+    const targetPlayerX = targetInterp ? targetInterp.x : (targetPlayer?.x || 0);
+    const targetPlayerY = targetInterp ? targetInterp.y : (targetPlayer?.y || 0);
+    const targetPlayerAngle = targetInterp ? targetInterp.angle : (targetPlayer?.angle || 0);
 
     // Camera target: prioritize freeCamPos (if in free cam spectator mode), then targetPlayer
     if (freeCamPos) {
@@ -202,10 +235,10 @@ export class CanvasRenderer {
     } else {
       if (targetPlayer) {
         // Smooth camera leading towards aim direction
-        const leadX = Math.cos(targetPlayer.angle) * (isSpectating ? 0 : 75);
-        const leadY = Math.sin(targetPlayer.angle) * (isSpectating ? 0 : 75);
-        const targetCamX = targetPlayer.x + leadX - width / 2;
-        const targetCamY = targetPlayer.y + leadY - height / 2;
+        const leadX = Math.cos(targetPlayerAngle) * (isSpectating ? 0 : 75);
+        const leadY = Math.sin(targetPlayerAngle) * (isSpectating ? 0 : 75);
+        const targetCamX = targetPlayerX + leadX - width / 2;
+        const targetCamY = targetPlayerY + leadY - height / 2;
 
         // Constrain camera within map bounds
         const minCamX = 0;
@@ -220,8 +253,8 @@ export class CanvasRenderer {
           this.cameraY = clampedY;
           this.hasInitializedCamera = true;
         } else {
-          this.cameraX += (clampedX - this.cameraX) * 0.2;
-          this.cameraY += (clampedY - this.cameraY) * 0.2;
+          this.cameraX += (clampedX - this.cameraX) * 0.25;
+          this.cameraY += (clampedY - this.cameraY) * 0.25;
         }
       }
     }
@@ -347,7 +380,8 @@ export class CanvasRenderer {
       }
 
       // Render player: If directly visible, full render; if concealed/shadows, render as tactical acoustic silhouette
-      this.drawPlayer(ctx, p, isLocal, now, !isDirectlyVisible && !isTeammate, isTeammate);
+      const pInterp = this.interpPlayers.get(p.id) || { x: p.x, y: p.y, angle: p.angle };
+      this.drawPlayer(ctx, p, isLocal, now, !isDirectlyVisible && !isTeammate, isTeammate, pInterp.x, pInterp.y, pInterp.angle);
     }
 
     // 12. Draw Floating Damage Numbers
@@ -362,8 +396,9 @@ export class CanvasRenderer {
   }
 
   private drawRespawnBeacon(ctx: CanvasRenderingContext2D, p: PlayerState, now: number) {
+    const interp = this.interpPlayers.get(p.id) || { x: p.x, y: p.y };
     ctx.save();
-    ctx.translate(p.x, p.y);
+    ctx.translate(interp.x, interp.y);
     const pulse = Math.sin(now * 0.008) * 0.3 + 0.7;
     ctx.strokeStyle = `rgba(245, 158, 11, ${pulse})`;
     ctx.lineWidth = 2;
@@ -388,9 +423,9 @@ export class CanvasRenderer {
     const W = MAP_CONFIG.width;
     const H = MAP_CONFIG.height;
 
-    // Tactical dark base
+    // Tactical dark base - only fill the visible screen viewport
     ctx.fillStyle = '#0f172a'; // slate-900
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(this.cameraX - 10, this.cameraY - 10, screenW + 20, screenH + 20);
 
     // Floor tile grid
     ctx.strokeStyle = 'rgba(30, 41, 59, 0.45)'; // slate-800
@@ -413,28 +448,32 @@ export class CanvasRenderer {
     }
     ctx.stroke();
 
-    // Subtle tactical center zone markings
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)'; // cyan ring
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(W / 2, H / 2, 280, 0, Math.PI * 2);
-    ctx.stroke();
+    // Subtle tactical center zone markings (only rendered if near viewport)
+    const centerX = W / 2;
+    const centerY = H / 2;
+    const camCenterX = this.cameraX + screenW / 2;
+    const camCenterY = this.cameraY + screenH / 2;
+    if (Math.hypot(centerX - camCenterX, centerY - camCenterY) < 800) {
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)'; // cyan ring
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 280, 0, Math.PI * 2);
+      ctx.stroke();
 
-    ctx.beginPath();
-    ctx.arc(W / 2, H / 2, 120, 0, Math.PI * 2);
-    ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 120, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   private drawSafeZone(ctx: CanvasRenderingContext2D, safeZone: SafeZone, now: number) {
-    const W = MAP_CONFIG.width;
-    const H = MAP_CONFIG.height;
     const { centerX, centerY, radius, targetRadius, isShrinking } = safeZone;
 
     ctx.save();
 
-    // 1. Draw Storm Hazard tint outside safeZone.radius using even-odd fill
+    // 1. Draw Storm Hazard tint outside safeZone.radius using viewport bounds
     ctx.beginPath();
-    ctx.rect(0, 0, W, H);
+    ctx.rect(this.cameraX - 10, this.cameraY - 10, this.canvas.width + 20, this.canvas.height + 20);
     ctx.arc(centerX, centerY, radius, 0, Math.PI * 2, true);
     ctx.closePath();
     ctx.fillStyle = 'rgba(239, 68, 68, 0.16)';
@@ -471,7 +510,13 @@ export class CanvasRenderer {
   }
 
   private drawTurrets(ctx: CanvasRenderingContext2D, turrets: Turret[], now: number, localPlayer?: PlayerState) {
+    const left = this.cameraX - 60;
+    const right = this.cameraX + this.canvas.width + 60;
+    const top = this.cameraY - 60;
+    const bottom = this.cameraY + this.canvas.height + 60;
+
     for (const t of turrets) {
+      if (t.x < left || t.x > right || t.y < top || t.y > bottom) continue;
       ctx.save();
       ctx.translate(t.x, t.y);
 
@@ -550,7 +595,13 @@ export class CanvasRenderer {
   }
 
   private drawPickups(ctx: CanvasRenderingContext2D, pickups: Pickup[], now: number) {
+    const left = this.cameraX - 40;
+    const right = this.cameraX + this.canvas.width + 40;
+    const top = this.cameraY - 40;
+    const bottom = this.cameraY + this.canvas.height + 40;
+
     for (const p of pickups) {
+      if (p.x < left || p.x > right || p.y < top || p.y > bottom) continue;
       const bob = Math.sin(now * 0.005 + p.x) * 3;
       const y = p.y + bob;
 
@@ -613,28 +664,40 @@ export class CanvasRenderer {
   }
 
   private drawSplatterDecals(ctx: CanvasRenderingContext2D) {
+    if (this.splatterDecals.length === 0) return;
+    const left = this.cameraX - 60;
+    const right = this.cameraX + this.canvas.width + 60;
+    const top = this.cameraY - 60;
+    const bottom = this.cameraY + this.canvas.height + 60;
+
     for (const d of this.splatterDecals) {
-      ctx.save();
+      if (d.x + d.radius < left || d.x - d.radius > right || d.y + d.radius < top || d.y - d.radius > bottom) {
+        continue;
+      }
       ctx.globalAlpha = d.alpha;
       ctx.fillStyle = d.color;
 
-      // Central puddle
       ctx.beginPath();
+      // Central puddle
       ctx.arc(d.x, d.y, d.radius, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Dripping satellite blood splatters
+      // Dripping satellite splatters in same path
       for (const pt of d.points) {
-        ctx.beginPath();
+        ctx.moveTo(d.x + pt.dx + pt.r, d.y + pt.dy);
         ctx.arc(d.x + pt.dx, d.y + pt.dy, pt.r, 0, Math.PI * 2);
-        ctx.fill();
       }
-      ctx.restore();
+      ctx.fill();
     }
+    ctx.globalAlpha = 1;
   }
 
   private drawGrenades(ctx: CanvasRenderingContext2D, grenades: ActiveGrenade[], now: number) {
+    const left = this.cameraX - 60;
+    const right = this.cameraX + this.canvas.width + 60;
+    const top = this.cameraY - 60;
+    const bottom = this.cameraY + this.canvas.height + 60;
+
     for (const g of grenades) {
+      if (g.x < left || g.x > right || g.y < top || g.y > bottom) continue;
       ctx.save();
       ctx.translate(g.x, g.y);
 
@@ -669,7 +732,15 @@ export class CanvasRenderer {
   }
 
   private drawBushes(ctx: CanvasRenderingContext2D, bushes: Bush[]) {
+    const left = this.cameraX - 60;
+    const right = this.cameraX + this.canvas.width + 60;
+    const top = this.cameraY - 60;
+    const bottom = this.cameraY + this.canvas.height + 60;
+
     for (const b of bushes) {
+      if (b.x + b.radius < left || b.x - b.radius > right || b.y + b.radius < top || b.y - b.radius > bottom) {
+        continue;
+      }
       // Multi-layer foliage
       ctx.fillStyle = 'rgba(20, 83, 45, 0.75)'; // deep forest green
       ctx.beginPath();
@@ -695,7 +766,15 @@ export class CanvasRenderer {
   }
 
   private drawWalls(ctx: CanvasRenderingContext2D, walls: Wall[]) {
+    const left = this.cameraX - 60;
+    const right = this.cameraX + this.canvas.width + 60;
+    const top = this.cameraY - 60;
+    const bottom = this.cameraY + this.canvas.height + 60;
+
     for (const w of walls) {
+      if (w.x + w.width < left || w.x > right || w.y + w.height < top || w.y > bottom) {
+        continue;
+      }
       if (w.type === 'crate') {
         // Cargo crate styling
         ctx.fillStyle = '#334155';
@@ -755,8 +834,12 @@ export class CanvasRenderer {
     // Save context to draw dark shroud overlay
     ctx.save();
 
-    // 1. Raycast the flashlight cone polygon
-    const numRays = 72;
+    // Pre-filter candidate walls near player
+    const coneWalls = filterWallsNear(localPlayer.x, localPlayer.y, flashDist, walls);
+    const periphWalls = filterWallsNear(localPlayer.x, localPlayer.y, periphDist, walls);
+
+    // 1. Raycast the flashlight cone polygon (optimized 40 rays)
+    const numRays = 40;
     const halfAngle = flashAngle / 2;
     const startAngle = localPlayer.angle - halfAngle;
     const stepAngle = flashAngle / (numRays - 1);
@@ -764,26 +847,20 @@ export class CanvasRenderer {
     const conePoints: { x: number; y: number }[] = [];
     for (let i = 0; i < numRays; i++) {
       const ang = startAngle + i * stepAngle;
-      const hit = castRay(localPlayer.x, localPlayer.y, ang, flashDist, walls);
+      const hit = castRay(localPlayer.x, localPlayer.y, ang, flashDist, coneWalls);
       conePoints.push(hit);
     }
 
     // 2. Peripheral 360 circle rays
-    const periphRays = 48;
+    const periphRays = 24;
     const periphPoints: { x: number; y: number }[] = [];
     for (let i = 0; i < periphRays; i++) {
       const ang = (i / periphRays) * Math.PI * 2;
-      const hit = castRay(localPlayer.x, localPlayer.y, ang, periphDist, walls);
+      const hit = castRay(localPlayer.x, localPlayer.y, ang, periphDist, periphWalls);
       periphPoints.push(hit);
     }
 
     // Draw ambient darkness over visible screen
-    const viewLeft = this.cameraX - 50;
-    const viewTop = this.cameraY - 50;
-    const viewW = screenW + 100;
-    const viewH = screenH + 100;
-
-    // Use destination-out to carve out flashlight vision
     // First, draw a soft flashlight cone beam on the ground (tactical aesthetic)
     const flashGrad = ctx.createRadialGradient(
       localPlayer.x, localPlayer.y, 10,
@@ -820,8 +897,14 @@ export class CanvasRenderer {
 
   private drawSoundEchoes(ctx: CanvasRenderingContext2D, echoes: SoundEcho[], _now: number, localPlayerId: string) {
     const wallClockNow = Date.now();
+    const left = this.cameraX - 100;
+    const right = this.cameraX + this.canvas.width + 100;
+    const top = this.cameraY - 100;
+    const bottom = this.cameraY + this.canvas.height + 100;
+
     for (const echo of echoes) {
       if (echo.sourcePlayerId === localPlayerId) continue; // Don't show own echoes
+      if (echo.x < left || echo.x > right || echo.y < top || echo.y > bottom) continue;
       const elapsed = wallClockNow - echo.timestamp;
       if (elapsed < 0 || elapsed > 1800) continue;
 
@@ -875,19 +958,21 @@ export class CanvasRenderer {
   }
 
   private drawBullets(ctx: CanvasRenderingContext2D, bullets: Bullet[]) {
+    if (bullets.length === 0) return;
+    const left = this.cameraX - 40;
+    const right = this.cameraX + this.canvas.width + 40;
+    const top = this.cameraY - 40;
+    const bottom = this.cameraY + this.canvas.height + 40;
+
     ctx.save();
     for (const b of bullets) {
+      if (b.x < left || b.x > right || b.y < top || b.y > bottom) continue;
       const len = 18;
       const backX = b.x - (b.vx / 600) * len;
       const backY = b.y - (b.vy / 600) * len;
 
-      // Glow tracer line
-      const grad = ctx.createLinearGradient(backX, backY, b.x, b.y);
-      grad.addColorStop(0, 'rgba(255, 255, 255, 0)');
-      grad.addColorStop(1, b.color || '#f59e0b');
-
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = b.isExplosive ? 5 : 3;
+      ctx.strokeStyle = b.color || '#f59e0b';
+      ctx.lineWidth = b.isExplosive ? 4.5 : 2.5;
       ctx.beginPath();
       ctx.moveTo(backX, backY);
       ctx.lineTo(b.x, b.y);
@@ -896,7 +981,7 @@ export class CanvasRenderer {
       // Bullet head
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(b.x, b.y, b.isExplosive ? 4 : 2.5, 0, Math.PI * 2);
+      ctx.arc(b.x, b.y, b.isExplosive ? 3.5 : 2, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
@@ -908,13 +993,19 @@ export class CanvasRenderer {
     isLocal: boolean,
     now: number,
     isShadowSilhouette: boolean = false,
-    isTeammate: boolean = false
+    isTeammate: boolean = false,
+    drawX?: number,
+    drawY?: number,
+    drawAngle?: number
   ) {
     const hero = HERO_DEFINITIONS[p.heroId] || HERO_DEFINITIONS.assault;
     const rad = MAP_CONFIG.playerRadius;
+    const posX = drawX ?? p.x;
+    const posY = drawY ?? p.y;
+    const angle = drawAngle ?? p.angle;
 
     ctx.save();
-    ctx.translate(p.x, p.y);
+    ctx.translate(posX, posY);
 
     // If teammate, render tactical squad marker
     if (isTeammate) {
@@ -946,7 +1037,7 @@ export class CanvasRenderer {
       // Heading indicator
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(p.angle) * (rad + 14), Math.sin(p.angle) * (rad + 14));
+      ctx.lineTo(Math.cos(angle) * (rad + 14), Math.sin(angle) * (rad + 14));
       ctx.stroke();
 
       // Enemy label
@@ -959,18 +1050,23 @@ export class CanvasRenderer {
     }
 
     // 1. Draw Auto-Fire Cone (Signature Bullet Echo feature!)
-    this.drawAutoFireCone(ctx, p, hero, isLocal, now);
+    this.drawAutoFireCone(ctx, p, hero, isLocal, now, angle);
 
     // 2. Active Special Ability Visuals
     if (p.abilityActive) {
       if (p.abilityActive.type === 'shield') {
         // Deployable energy barrier arc in front
         ctx.save();
-        ctx.rotate(p.angle);
-        ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 8;
-        ctx.shadowColor = '#06b6d4';
-        ctx.shadowBlur = 14;
+        ctx.rotate(angle);
+        // Outer glow arc
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.35)';
+        ctx.lineWidth = 14;
+        ctx.beginPath();
+        ctx.arc(0, 0, rad + 20, -Math.PI * 0.38, Math.PI * 0.38);
+        ctx.stroke();
+        // Inner core arc
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 6;
         ctx.beginPath();
         ctx.arc(0, 0, rad + 20, -Math.PI * 0.38, Math.PI * 0.38);
         ctx.stroke();
@@ -1002,7 +1098,7 @@ export class CanvasRenderer {
     const stride = isMoving ? Math.sin(now * strideFreq) * 9 : 0;
 
     ctx.save();
-    ctx.rotate(p.angle);
+    ctx.rotate(angle);
 
     // Left & Right Legs
     ctx.fillStyle = '#1e293b'; // Tactical combat pants
@@ -1053,15 +1149,12 @@ export class CanvasRenderer {
       ctx.ellipse(rad * 0.2, rad * 0.75, 12, 7, -0.2, 0, Math.PI * 2);
       ctx.fill();
       // Glowing Cyan LED Conduit Lines
-      ctx.strokeStyle = '#06b6d4';
+      ctx.strokeStyle = '#22d3ee';
       ctx.lineWidth = 2;
-      ctx.shadowColor = '#06b6d4';
-      ctx.shadowBlur = 6;
       ctx.beginPath();
       ctx.moveTo(rad * 0.05, rad * 0.75);
       ctx.lineTo(rad * 0.45, rad * 0.75);
       ctx.stroke();
-      ctx.shadowBlur = 0;
 
       // Chrome Robotic Hand gripping chaingun
       ctx.fillStyle = '#cbd5e1';
@@ -1198,13 +1291,16 @@ export class CanvasRenderer {
     // Muzzle flash when actively shooting
     if (p.isShooting) {
       const flashX = rad * 1.6 + recoil;
-      ctx.fillStyle = '#fef08a';
-      ctx.shadowColor = '#f59e0b';
-      ctx.shadowBlur = 10;
+      // Outer bright flash halo
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.4)';
       ctx.beginPath();
-      ctx.arc(flashX, 0, 8, 0, Math.PI * 2);
+      ctx.arc(flashX, 0, 11, 0, Math.PI * 2);
       ctx.fill();
-      ctx.shadowBlur = 0;
+      // Core flash
+      ctx.fillStyle = '#fef08a';
+      ctx.beginPath();
+      ctx.arc(flashX, 0, 6, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // Local player tactical ring
@@ -1266,6 +1362,46 @@ export class CanvasRenderer {
       ctx.fillText(displayName, 0, barY - (p.maxArmor > 0 ? 10 : 8));
     }
 
+    // 6. High-Value Bounty Target Overhead Indicator
+    if (p.hasBounty && p.bountyReward) {
+      const pulse = Math.sin(now * 0.008) * 0.25 + 0.75;
+      const bountyY = barY - (p.maxArmor > 0 ? 25 : 22);
+
+      ctx.save();
+      // Tactical background pill
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      ctx.strokeStyle = `rgba(245, 158, 11, ${pulse})`;
+      ctx.lineWidth = 2;
+
+      const tagText = `👑 WANTED: ${p.bountyReward} GOLD`;
+      ctx.font = 'bold 9px monospace';
+      const textMetrics = ctx.measureText(tagText);
+      const pillW = textMetrics.width + 16;
+      const pillH = 16;
+
+      ctx.beginPath();
+      ctx.roundRect(-pillW / 2, bountyY - pillH / 2, pillW, pillH, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      // Text
+      ctx.fillStyle = '#fbbf24';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tagText, 0, bountyY);
+      ctx.restore();
+
+      // Golden targeting reticle around the bounty character
+      ctx.save();
+      ctx.strokeStyle = `rgba(245, 158, 11, ${pulse * 0.8})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.arc(0, 0, rad + 10, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.restore();
   }
 
@@ -1274,12 +1410,14 @@ export class CanvasRenderer {
     p: PlayerState,
     hero: typeof HERO_DEFINITIONS[HeroId],
     isLocal: boolean,
-    now: number
+    now: number,
+    aimAngle?: number
   ) {
     const range = hero.fireRange;
     const halfAngle = hero.fireAngle / 2;
-    const startAngle = p.angle - halfAngle;
-    const endAngle = p.angle + halfAngle;
+    const curAngle = aimAngle ?? p.angle;
+    const startAngle = curAngle - halfAngle;
+    const endAngle = curAngle + halfAngle;
 
     ctx.save();
     ctx.beginPath();
@@ -1387,6 +1525,12 @@ export class CanvasRenderer {
   }
 
   private updateAndDrawParticles(ctx: CanvasRenderingContext2D, dt: number) {
+    if (this.particles.length === 0) return;
+    const left = this.cameraX - 40;
+    const right = this.cameraX + this.canvas.width + 40;
+    const top = this.cameraY - 40;
+    const bottom = this.cameraY + this.canvas.height + 40;
+
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.x += p.vx * dt;
@@ -1399,7 +1543,10 @@ export class CanvasRenderer {
         continue;
       }
 
-      ctx.save();
+      if (p.x < left || p.x > right || p.y < top || p.y > bottom) {
+        continue;
+      }
+
       ctx.globalAlpha = p.alpha;
       ctx.fillStyle = p.color;
       if (p.size > 0 && Number.isFinite(p.size)) {
@@ -1407,8 +1554,8 @@ export class CanvasRenderer {
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.restore();
     }
+    ctx.globalAlpha = 1;
   }
 
   private drawFloatingTexts(ctx: CanvasRenderingContext2D, now: number) {
@@ -1426,11 +1573,13 @@ export class CanvasRenderer {
 
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = ft.color;
       ctx.font = 'bold 14px monospace';
       ctx.textAlign = 'center';
-      ctx.shadowColor = '#000000';
-      ctx.shadowBlur = 4;
+      // Crisp outline without expensive canvas shadowBlur
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(ft.text, ft.x, curY);
+      ctx.fillStyle = ft.color;
       ctx.fillText(ft.text, ft.x, curY);
       ctx.restore();
     }
